@@ -1,0 +1,1533 @@
+---
+title: "RNA study"
+author: "Ya Wang"
+date: "September 4, 2022"
+header-includes:
+- \usepackage{titling}
+- \posttitle{\end{center}}
+output: 
+  pdf_document:
+    toc: true
+    keep_tex: true
+    dev: png
+editor_options: 
+  chunk_output_type: console
+---
+
+\newpage
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_chunk$set(dpi=600,fig.width=7)
+library(stringr)
+library(dplyr)
+library(ggplot2)
+library(GUniFrac)
+library(ape)
+library(matrixStats)
+library(phytools)
+library(RColorBrewer)
+library(reshape2)
+library(scales)
+library(gplots)
+library(gtools)
+library(vegan)
+library(phyloseq)
+
+setwd("~/Dropbox (Harvard University)/hutlab/Lea/Manuscript/RNA_manuscript/sup/")
+
+#Read in the total metadata
+metadata = read.csv("~/Dropbox (Harvard University)/hutlab/Lea/Manuscript/RNA_manuscript/sup/Supple_1_metadata.csv", sep = ",", header = T)
+tax = read.csv("~/Dropbox (Harvard University)/hutlab/Lea/Manuscript/RNA_manuscript/sup/Supple_2_OTU.csv", sep = ",", header = T, row.names = 1)
+names(tax) = gsub("X", "", names(tax))
+otu = tax
+otu$taxonomy = NULL
+
+#split off the taxonomy and start to modify 
+tax_levels = strsplit(as.character(tax$taxonomy), split = "; ", fixed = TRUE)
+tax_levels = as.matrix(t(sapply(tax_levels, function(x) x)))
+row.names(tax_levels) = row.names(tax)
+colnames(tax_levels) = c("Domain", "Phylum", "Class", "Order", "Family", "Genus", "Species")
+tax_dat = tax
+tax_dat$taxonomy = NULL
+
+meta_dat = metadata[metadata$Sequencer.Name %in% names(tax), ]
+tax_dat = data.frame(t(tax_dat), check.names = F)
+tax_dat$sample = meta_dat[match(row.names(tax_dat), meta_dat$Sequencer.Name), "Sample.Name"]
+row.names(tax_dat) = tax_dat$sample
+tax_dat$sample = NULL
+tax_dat = data.frame(t(tax_dat), check.names = F)
+tax_dat = otu_table(tax_dat, taxa_are_rows = T)
+tax_levels = tax_table(tax_levels)
+#Match the row.names of the metadata to the sample names
+row.names(meta_dat) = meta_dat$Sample.Name
+
+#Contaim test
+list = subset(meta_dat, Type == "Control")
+tax_sub_control = tax[, names(tax) %in% list$Sequencer.Name]
+tax_control = tax_sub_control[rowSums(tax_sub_control)>0, ]
+contam = tax_control
+contam$taxonomy = tax[match(row.names(contam), row.names(tax)), "taxonomy"]
+dim( tax_control[ apply(tax_control, 1, function(x) sum( x > 0.001) > 0.1 * ncol(tax_control) ), ])
+contam_filt = tax_control[ apply(tax_control, 1, function(x) sum( x > 0.001) > 0.1 * ncol(tax_control) ), ]
+
+######Testing starts here
+contam_list = row.names(contam)
+#tax = tax[-which(row.names(tax) %in% contam_list), ]
+lab_meta = subset(meta_dat, source == "Synthetic" | source == "Control")
+lab_meta_synthetic = subset(meta_dat, source == "Synthetic")
+drop_list = c("10^6-cDNA", "10^2-cDNA", "Air_in_cDNA", "Air_out_cDNA", "Saline_cDNA", "Broth_cDNA", "EB buffer_cDNA", "H2O_cDNA", "10^6-RNA", "10^2-RNA", "Air_in_RNA", "Air_out_RNA", "Saline_RNA","Broth_RNA","EB buffer_RNA","H2O_RNA")
+
+#aggragate counts by taxonomy
+tax$taxonomy = gsub("; s__.*", "", tax$taxonomy)
+tax = tax %>% group_by(taxonomy) %>% summarise_all(list(sum))
+tax_levels = strsplit(as.character(tax$taxonomy), split = "; ", fixed = TRUE)
+tax_levels = data.frame(t(sapply(tax_levels, function(x) x)))
+row.names(tax_levels) = tax$taxonomy
+names(tax_levels) = c("Domain", "Phylum", "Class", "Order", "Family", "Genus")
+tax_levels = data.frame(tax_levels)
+tax_levels = subset(tax_levels, Domain != "k__" &  Domain != "k__Eukaryota")
+tax_levels$Domain = droplevels(as.factor(tax_levels$Domain))
+tax_levels$Phylum = ifelse(tax_levels$Phylum == "p__", "p__Unclassified", as.character(tax_levels$Phylum))
+tax_levels$cleaned_names = ifelse(tax_levels$Genus == "g__", as.character(tax_levels$Family), as.character(tax_levels$Genus))
+tax_levels$cleaned_names = ifelse(tax_levels$cleaned_names == "f__", as.character(tax_levels$Order), as.character(tax_levels$cleaned_names))
+tax_levels$cleaned_names = ifelse(tax_levels$cleaned_names == "o__", as.character(tax_levels$Class), as.character(tax_levels$cleaned_names))
+tax_levels$cleaned_names = ifelse(tax_levels$cleaned_names == "c__", as.character(tax_levels$Phylum), as.character(tax_levels$cleaned_names))
+
+tax = tax[tax$taxonomy %in% row.names(tax_levels), ]
+tax = as.data.frame(tax)
+tax$cleaned_names = tax_levels[match(tax$taxonomy, row.names(tax_levels)), "cleaned_names"]
+
+tax$taxonomy = NULL
+tax_gen = tax %>% group_by(cleaned_names) %>% summarise_all(list(sum))
+tax_gen = as.data.frame(tax_gen, check.names = F)
+row.names(tax_gen) = tax_gen$cleaned_names
+tax_gen$cleaned_names = NULL
+tax_gen = as.data.frame(t(tax_gen), check.names = F)
+tax_gen = tax_gen/rowSums(tax_gen)
+rowSums(tax_gen)
+head(tax_gen)
+
+#filter the bugs
+dim(tax_gen)
+tax_gen = data.frame(t(tax_gen), check.names = F)
+dim( tax_gen[ apply(tax_gen, 1, function(x) sum( x > 0.0001) > 0.1 * ncol(tax_gen) ), ])
+tax_filt = tax_gen[ apply(tax_gen, 1, function(x) sum( x > 0.0001) > 0.1 * ncol(tax_gen) ), ]
+#Let's transpose it for easier use downstream
+tax_filt = data.frame(t(tax_filt), check.names = F)
+tax_gen = data.frame(t(tax_gen))
+row.names(tax_gen) = gsub("X", "", row.names(tax_gen))
+row.names(tax_filt) = gsub("X", "", row.names(tax_filt))
+
+lab_meta$Sequencer.Name = droplevels(as.factor(lab_meta$Sequencer.Name))
+lab_otu = otu[, names(otu) %in% lab_meta$Sequencer.Name]
+#Select for only those OTUs with more than 10 reads in all the Lab + Lab control samples. 
+lab_otu = lab_otu[rowSums(lab_otu) > 50, ]
+#Make a subset of the curated genus level abundance tables
+lab_gen_filt = tax_filt[row.names(tax_filt) %in% lab_meta$Sequencer.Name, ]
+lab_gen_filt = lab_gen_filt[, colSums(lab_gen_filt) > .01]
+
+```
+
+\newpage
+##Beta Diversity
+Species abundances are passed through a basic filter requiring each species to have at least 0.01 % abundance in at least 10 % of all samples.
+A total of `r nrow(otu)` amplicon sequence variants were identified. After basic filtering and aggragation of the data `r ncol(tax_filt)` genera remained.
+
+###Bray-curtis dissimilarity
+####Principal coordinates analysis colored by covariates
+
+```{r pcoa_bray_source_tax, echo = FALSE, warning = FALSE, message = FALSE}
+# calculate bray curtis dissimilarity
+bray = vegdist(tax_filt, "bray")
+
+#Do the corrdinate analysis
+pc = capscale(bray~1, comm = tax_filt)
+cap = data.frame(pc$CA$u)
+cap = merge(meta_dat, cap, by.x = "Sequencer.Name", by.y = "row.names")
+rownames(cap) = cap[,1]
+cap = cap[,2:ncol(cap)]
+s = summary(pc)
+
+p <- ggplot(cap, aes(MDS1, MDS2,  group = match)) + geom_point(aes(color = source, shape = DNA.or.cDNA), size = 4, alpha = 0.7) + geom_line() + theme_bw(base_size = 8)  + coord_fixed() + 
+  labs(color = "Source material", shape = "Library", title="", 
+       x = paste("Axis 1 (", round(s$cont$importance[2,1]*100, digits =2), "%)", sep = ''),
+        y = paste("Axis 2 (", round(s$cont$importance[2,2]*100, digits =2), "%)", sep = ''))
+p
+#dev.off()
+```
+
+```{r adonis_univariate_tax_bray, echo = FALSE, warning = FALSE, message = FALSE}
+row.names(meta_dat)=meta_dat$Sequencer.Name
+meta_dat=meta_dat[order(match(row.names(meta_dat), row.names(tax_filt))),]
+adonis_res_pval = vector()
+adonis_res_rsq = vector()
+
+for (col in names(meta_dat[, c(5:6, 8:9)])){
+  adonis.univ = adonis(as.formula(paste("tax_filt~", col)), data = meta_dat[, c(5:6, 8:9)], permutations = 999, method = 'bray')
+  adonis_res_pval[col] = adonis.univ$aov.tab[1,]$`Pr(>F)`
+  adonis_res_rsq[col] = adonis.univ$aov.tab[1,]$R2
+}
+
+univar_res_tax = rbind(adonis_res_pval, adonis_res_rsq)
+univar_res_tax = as.data.frame(t(univar_res_tax))
+names(univar_res_tax) = c("P-Value", "R2")
+univar_res_tax$`P-Value` = as.numeric(univar_res_tax$`P-Value`)
+univar_res_tax$R2 = as.numeric(univar_res_tax$R2)
+univar_res_tax$p_adj = p.adjust(univar_res_tax$`P-Value`, "fdr")
+
+univar_res_tax #Univariate tests on Bray-Curtis dissimilarity of all samples in this study (n=192). Supplementary_3_AdonisTests
+```
+
+#Question #1:  in Synthetic Cultures
+```{r barplot_qPCR_source_lab, echo = FALSE, warning = FALSE, message = FALSE, fig.width= 25, fig.height= 6}
+Copies_all_part1 = subset(metadata, metadata$source == "Synthetic")
+Copies_all_part1$Group = Copies_all_part1$Sample.Name
+Copies_all_part1$Group = gsub("_cDNA", "", Copies_all_part1$Group)
+Copies_all_part1$Group = gsub("_1", "", Copies_all_part1$Group)
+Copies_all_part1$Group = gsub("_2", "", Copies_all_part1$Group)
+Copies_all_part1$Group = gsub("_3", "", Copies_all_part1$Group)
+Copies_all_part1$Group = gsub("_4", "", Copies_all_part1$Group)
+Copies_all_part1$match = Copies_all_part1$Sample.Name
+Copies_all_part1$match = gsub("_cDNA", "", Copies_all_part1$match)
+
+#Group 4 were excluded due to extractions not optimal
+Copies_all_part1=subset(Copies_all_part1, !Copies_all_part1$match == "Gp1_4")
+Copies_all_part1=subset(Copies_all_part1, !Copies_all_part1$match == "Gp2_4")
+Copies_all_part1=subset(Copies_all_part1, !Copies_all_part1$match == "Gp3_4")
+Copies_all_part1=subset(Copies_all_part1, !Copies_all_part1$match == "Gp4_4")
+Copies_all_part1=subset(Copies_all_part1, !Copies_all_part1$match == "Gp5_4")
+Copies_all_part1=subset(Copies_all_part1, !Copies_all_part1$match == "Gp6_4")
+Copies_all_part1=subset(Copies_all_part1, !Copies_all_part1$match == "Gp7_4")
+Copies_all_part1=subset(Copies_all_part1, !Copies_all_part1$match == "Gp8_4")
+Copies_all_part1=subset(Copies_all_part1, !Copies_all_part1$match == "Gp9_4")
+Copies_all_part1=subset(Copies_all_part1, !Copies_all_part1$match == "Gp10_4")
+
+Copies_all_part1$Group = ordered(Copies_all_part1$Group, c("Gp1","Gp2","Gp3", "Gp4", "Gp5", "Gp6", "Gp7", "Gp8", "Gp9", "Gp10"))
+Copies_all_part1$DNA.or.cDNA = ordered(Copies_all_part1$DNA.or.cDNA, c("DNA", "RNA"))
+col_library = c("DNA" = "#d4d4d4", "RNA" = "#606061")
+p = ggplot(Copies_all_part1, aes(reorder(Sample.Name, log10_qPCR), y= log10_qPCR, fill = DNA.or.cDNA)) + geom_bar(width = 1, stat = "identity", color = "black") + theme_bw(base_size = 8) + ylab("log10 16S copy number (qPCR)") + xlab("Samples") + theme(axis.text.x = element_text(angle = 90, hjust=1, vjust=0.5)) + scale_fill_manual(values = col_library) + facet_grid(~Group + DNA.or.cDNA, scales = "free", space ="free") + theme(axis.title.x=element_blank(), axis.text.x=element_blank(), axis.ticks.x=element_blank())  + coord_cartesian(ylim=c(8.5, 15))
+#remove spaces within same sample type
+p = p + theme(panel.spacing = unit(0.01, "lines"))
+
+library(grid)
+gt = ggplot_gtable(ggplot_build(p))
+gt$widths[8] = 40*gt$widths[8]
+gt$widths[12] = 40*gt$widths[12]
+gt$widths[16] = 40*gt$widths[16]
+gt$widths[20] = 40*gt$widths[20]
+gt$widths[24] = 40*gt$widths[24]
+gt$widths[28] = 40*gt$widths[28]
+gt$widths[32] = 40*gt$widths[32]
+gt$widths[36] = 40*gt$widths[36]
+gt$widths[40] = 40*gt$widths[40]
+
+#Export as pdf 12 x 2.35
+grid.draw(gt) #Figure 1b
+#dev.off()
+```
+
+\newpage
+#### Visualized as stacked barplots
+
+```{r composition_tax_lab, include=FALSE}
+#Creating bar plots for visualizations
+who = names(sort(colMeans(lab_gen_filt), decreasing = TRUE))[1:3]
+f = lab_gen_filt[,names(lab_gen_filt) %in% who]
+#Sort f by most abundant taxa
+f = f[order(colMeans(f), decreasing = T)]
+# adding in other taxa as a column for display
+f$Other = 1-rowSums(f)
+who = c(who, "Other")
+f$PCR = lab_meta[match(row.names(f), lab_meta$Sequencer.Name), "X16S.copy.number"]
+f$sample = lab_meta[match(row.names(f), lab_meta$Sequencer.Name), "Sample.Name"]
+row.names(f) = f$sample
+f$sample = NULL
+
+# now order samples (rows) by the most abundant taxon/Sort the x-axis by most abundant
+f = f[order(f$PCR, decreasing = F ), ]
+f$PCR = NULL
+#transpose f to add in the sample names for the melt
+f = data.frame(t(f))
+head(f)
+#remove the X in front of the numbers in the colnames
+names(f) = gsub("^X", "", names(f))
+head(f)
+# add Taxon column prior to melting
+f$Taxa <- row.names(f)
+# melt
+m = melt(f)
+# add the groups into the analysis
+m$collection = lab_meta[ match(m$variable, lab_meta$Sample.Name), "collection" ]
+m$library = lab_meta[ match(m$variable, lab_meta$Sample.Name ), "DNA.or.cDNA" ]
+m$source = lab_meta[ match(m$variable, lab_meta$Sample.Name ), "source" ]
+m$samle.name = lab_meta[match(m$variable, lab_meta$Sample.Name), "Sample.Name"]
+m$match = lab_meta[match(m$variable, lab_meta$Sample.Name), "match"]
+
+#make the colors, making the "Other" grey.
+col_taxa = c("f__Enterobacteriaceae" = "#80B1D3", "g__Streptococcus" = "#FCCDE5", "g__Ralstonia" = "#F7EA67", "Other" = "#CCCCCC")
+
+```
+
+Bar plot of the top 3 abundant taxa in study faceted by culture type
+
+```{r bar_genus_by_culture_type_tax_lab, echo = FALSE, warning = FALSE, message = FALSE, fig.width=8, fig.height=3}
+m.part1=m
+m.part1$Gp = m.part1$variable
+m.part1$Gp=gsub("_cDNA", "", m.part1$Gp)
+m.part1$Gp=gsub("_1", "", m.part1$Gp)
+m.part1$Gp=gsub("_2", "", m.part1$Gp)
+m.part1$Gp=gsub("_3", "", m.part1$Gp)
+m.part1$Gp=gsub("_4", "", m.part1$Gp)
+m.part1=subset(m.part1, m.part1$source == "Synthetic")
+m.part1=subset(m.part1, !m.part1$match == "Gp1_4")
+m.part1=subset(m.part1, !m.part1$match == "Gp2_4")
+m.part1=subset(m.part1, !m.part1$match == "Gp3_4")
+m.part1=subset(m.part1, !m.part1$match == "Gp4_4")
+m.part1=subset(m.part1, !m.part1$match == "Gp5_4")
+m.part1=subset(m.part1, !m.part1$match == "Gp6_4")
+m.part1=subset(m.part1, !m.part1$match == "Gp7_4")
+m.part1=subset(m.part1, !m.part1$match == "Gp8_4")
+m.part1=subset(m.part1, !m.part1$match == "Gp9_4")
+m.part1=subset(m.part1, !m.part1$match == "Gp10_4")
+
+m.part1$Gp = ordered(m.part1$Gp, c("Gp1", "Gp2", "Gp3", "Gp4", "Gp5", "Gp6", "Gp7", "Gp8", "Gp9" , "Gp10"))
+m.part1$library = ordered(m.part1$library, c("DNA", "RNA"))
+
+p = ggplot(m.part1, aes(samle.name, fill = Taxa)) + geom_bar(aes(weight = value), position = position_fill(reverse = TRUE)) + theme_bw(base_size = 8) + facet_grid(~Gp + library, scales = "free", space ="free") + scale_fill_manual(values = col_taxa) + ylab("Relative Abundance") + theme(axis.title.x=element_blank(),axis.text.x=element_blank(), axis.ticks.x=element_blank()) + theme(legend.title = element_blank(), legend.position = "none") + guides(fill = guide_legend(ncol = 1, reverse=TRUE, keyheight = 0.55)) + scale_y_continuous(labels = percent_format()) + labs(title="") + theme(plot.title = element_text(size = 30))
+p$data$Taxa = factor(p$data$Taxa, ordered = TRUE, levels = who)
+
+#remove spaces within same sample type
+p = p + theme(panel.spacing = unit(0.01, "lines"))
+
+#add space between each sample types (here add space after 12th, 20th and 28th columns)
+library(grid)
+gt = ggplot_gtable(ggplot_build(p))
+gt$widths[8] = 40*gt$widths[8]
+gt$widths[12] =40*gt$widths[12]
+gt$widths[16] = 40*gt$widths[16]
+gt$widths[20] = 40*gt$widths[20]
+gt$widths[24] = 40*gt$widths[24]
+gt$widths[28] = 40*gt$widths[28]
+gt$widths[32] = 40*gt$widths[32]
+gt$widths[36] = 40*gt$widths[36]
+gt$widths[40] = 40*gt$widths[40]
+grid.draw(gt) #Figure 1c
+
+#dev.off()
+```
+
+#Question #2: Spike-in testing
+\newpage
+#### Visualized as stacked barplots
+```{r composition_tax, include=FALSE}
+#Creating bar plots for visualizations
+biomass_meta = subset(meta_dat, source == "Environ spike in")
+biomass_meta$Sequencer.Name=as.factor(biomass_meta$Sequencer.Name)
+biomass_meta$Sequencer.Name = droplevels(biomass_meta$Sequencer.Name)
+biomass_otu = otu[, names(otu) %in% biomass_meta$Sequencer.Name]
+biomass_otu = biomass_otu[rowSums(biomass_otu) > 64, ]
+biomass_gen_filt = tax_filt[row.names(tax_filt) %in% biomass_meta$Sequencer.Name, ]
+
+who = names(sort(colMeans(biomass_gen_filt), decreasing = TRUE))[1:15]
+f = biomass_gen_filt[,names(biomass_gen_filt) %in% who]
+#Sort f by most abundant taxa
+f = f[order(colMeans(f), decreasing = T)]
+# adding in other taxa as a column for display
+f$Other = 1-rowSums(f)
+who = c(who, "Other")
+#f$PCR = ordered_biomass_meta[match(row.names(f), ordered_biomass_meta$Sequencer.Name), "X16S.copy.number"]
+f$sample = biomass_meta[match(row.names(f), biomass_meta$Sequencer.Name), "Sample.Name"]
+row.names(f) = f$sample
+f$sample = NULL
+#transpose f to add in the sample names for the melt
+f = data.frame(t(f))
+head(f)
+# add Taxon column prior to melting
+f$Taxa <- row.names(f)
+# melt
+m = melt(f)
+# add the groups into the analysis
+m$collection = biomass_meta[ match(m$variable,biomass_meta$Sample.Name), "Collection" ]
+m$library = biomass_meta[ match(m$variable, biomass_meta$Sample.Name ), "DNA.or.cDNA" ]
+m$sample = biomass_meta[ match(m$variable, biomass_meta$Sample.Name ), "Sample" ]
+m$spike = biomass_meta[ match(m$variable, biomass_meta$Sample.Name ), "Spike.in" ]
+m$sample.name = biomass_meta[ match(m$variable, biomass_meta$Sample.Name ), "Sample.Name" ]
+m$spike = gsub("102-3CFU/ml", "Yes", m$spike)
+m$spike = gsub("105-6CFU/ml", "Yes", m$spike)
+
+#make the colors for 29 taxa + 1 "Other" (30 total), making the "Other" gray.
+col = scale_fill_manual(values = c("f__Enterobacteriaceae" = "#80B1D3", "g__Streptococcus" = "#FCCDE5", "g__Actinomyces"="#CCEBC5", "o__Streptophyta"="#BC80BD", "g__Sphingomonas"="#E7298A", "g__Lactobacillus"="#B3DE69","g__Staphylococcus"="#8e4ae0","g__Pseudomonas"="#FB8072", "g__Neisseria"="#BEBADA", "g__Haemophilus"="#FFFFB3", "g__Acinetobacter"="#8DD3C7", "g__Corynebacterium"="#00008B", "f__Gemellaceae"="#E7298A", "f__Acetobacteraceae"="#F46D43", "g__Methylobacterium"="#edcf6d", "Other"="#CCCCCC"))
+
+```
+
+Bar plot of the top 15 abundant taxa in study faceted by culture type
+```{r bar_genus_by_diabetes_tax, echo = FALSE, warning = FALSE, message = FALSE, fig.width=8, fig.height=3}
+m$spike=gsub("Yes", "Spike+", m$spike)
+m$spike=gsub("No", "Spike-", m$spike)
+m$collection=gsub("Computer screen", "Screen", m$collection)
+m$collection=gsub("Computer mouse", "Mouse", m$collection)
+
+m$collection = ordered(m$collection, c("Screen", "Mouse", "Saliva", "Soil"))
+
+png("relative_abundance_biomass_samples.png", height = 5, width = 25, units = "in", res = 600)
+p = ggplot(m, aes(sample.name, fill = Taxa)) + geom_bar(aes(weight = value), position = position_fill(reverse = TRUE)) + theme_bw(base_size = 8) + facet_grid(~collection + spike + library, scales = "free", space ="free") +  col + ylab("Relative Abundance") + theme(legend.text = element_text(face = "italic")) + guides(fill = guide_legend(ncol = 1, reverse=TRUE, keyheight = 0.55)) + scale_y_continuous(labels = percent_format()) + labs(title="") + theme(plot.title = element_text(size = 20))
+p$data$Taxa = factor(p$data$Taxa, ordered = TRUE, levels = who)
+
+# label each column
+p = p + theme(axis.text.x = element_text(angle = 90, hjust=1, vjust=0.5))
+# remove column names
+p = p + theme(axis.title.x=element_blank(),
+        axis.text.x=element_blank(),
+        axis.ticks.x=element_blank())
+
+#remove spaces within same sample type
+p = p + theme(panel.spacing = unit(0.01, "lines"))
+gt = ggplot_gtable(ggplot_build(p))
+gt$widths[12] = 60*gt$widths[12]
+gt$widths[20] = 60*gt$widths[20]
+gt$widths[28] = 60*gt$widths[28]
+grid.draw(gt) 
+#dev.off()
+
+#Remove contaimed samples
+m = subset(m, !m$sample == "soil1")
+m = subset(m, !m$sample == "saliva1")
+
+m$collection = ordered(m$collection, c("Screen", "Mouse", "Saliva", "Soil"))
+p = ggplot(m, aes(sample.name, fill = Taxa)) + geom_bar(aes(weight = value), position = position_fill(reverse = TRUE)) + theme_bw(base_size = 8) + facet_grid(~collection + spike + library, scales = "free", space ="free") +  col + ylab("Relative Abundance") + theme(legend.text = element_text(face = "italic")) + guides(fill = guide_legend(ncol = 1, reverse=TRUE, keyheight = 0.55)) + scale_y_continuous(labels = percent_format()) + labs(title="") + theme(plot.title = element_text(size = 20))
+p$data$Taxa = factor(p$data$Taxa, ordered = TRUE, levels = who)
+
+p = p + theme(axis.text.x = element_text(angle = 90, hjust=1, vjust=0.5)) + theme(axis.title.x=element_blank(),
+        axis.text.x=element_blank(),
+        axis.ticks.x=element_blank()) + theme(panel.spacing = unit(0.01, "lines"))
+
+gt = ggplot_gtable(ggplot_build(p))
+gt$widths[12] = 60*gt$widths[12]
+gt$widths[20] = 60*gt$widths[20]
+gt$widths[28] = 60*gt$widths[28]
+grid.draw(gt)##Figure 2a
+#dev.off()
+```
+
+```{r bar_controls, echo = FALSE, warning = FALSE, message = FALSE, fig.width=8, fig.height=3}
+#Controls
+control_meta = subset(meta_dat, source == "Control")
+control_gen_filt = tax_filt[row.names(tax_filt) %in% control_meta$Sequencer.Name, ]
+who = names(sort(colMeans(control_gen_filt), decreasing = TRUE))[1:15]
+f = control_gen_filt[,names(control_gen_filt) %in% who]
+f = f[order(colMeans(f), decreasing = T)]
+f$Other = 1-rowSums(f)
+who = c(who, "Other")
+f$sample = control_meta[match(row.names(f), control_meta$Sequencer.Name), "Sample.Name"]
+row.names(f) = f$sample
+f$sample = NULL
+f = data.frame(t(f))
+head(f)
+
+f$Taxa <- row.names(f)
+m = melt(f)
+m$variable = gsub("X", "", m$variable)
+m$variable = gsub("10.2.", "10^2-", m$variable)
+m$variable = gsub("10.6.", "10^6-", m$variable)
+m$variable = gsub("EB.", "EB ", m$variable)
+
+m$collection = control_meta[ match(m$variable, control_meta$Sample.Name), "Collection" ]
+m$library = control_meta[ match(m$variable, control_meta$Sample.Name ), "DNA.or.cDNA" ]
+m$sample.name = control_meta[ match(m$variable, control_meta$Sample.Name ), "Sample.Name" ]
+m$sample = m$sample.name
+m$sample = gsub("-cDNA", "", m$sample)
+m$sample = gsub("_cDNA", "", m$sample)
+m$sample = gsub("-RNA", "", m$sample)
+m$sample = gsub("_RNA", "", m$sample)
+m$variable = ordered(m$sample)
+m$library = ordered(m$library, c("DNA", "RNA"))
+
+col = scale_fill_manual(values = c("f__Enterobacteriaceae" = "#80B1D3", "g__Streptococcus" = "#FCCDE5", "g__Actinomyces"="#CCEBC5", "o__Streptophyta"="#BC80BD", "g__Sphingomonas"="#E7298A","g__Lactobacillus"="#B3DE69","g__Staphylococcus"="#8e4ae0","g__Pseudomonas"="#FB8072", "g__Neisseria"="#BEBADA", "g__Haemophilus"="#FFFFB3", "g__Acinetobacter"="#8DD3C7", "g__Corynebacterium"="#00008B", "f__Gemellaceae"="#E7298A", "f__Acetobacteraceae"="#F46D43", "g__Methylobacterium"="#edcf6d","g__Ralstonia" = "#F7EA67", "g__Sphingomonas"="#E7298A", "g__Hymenobacter"="#3288BD","f__Xenococcaceae"="#5E4FA2","g__Anaerococcus"="#FFED6F", "g__Lactobacillus"="#B3DE69","g__Staphylococcus"="#8e4ae0","g__Pseudomonas"="#FB8072", "g__Haemophilus"="#FFFFB3", "g__Acinetobacter"="#8DD3C7", "g__Corynebacterium"="#00008B", "f__Acetobacteraceae"="#F46D43", "g__Methylobacterium"="#edcf6d", "g__Delftia" = "#a3c9ad", "g__Deinococcus"="#60916d","g__Rudanella"="#d9c8a3","g__Roseomonas"="#9c8a65","g__Spirosoma"="#b7d6e8","f__Comamonadaceae"="#b5a7cc","g__Bacillus"="#8f7560","f__Clostridiaceae"="#acb38f","Other"="#CCCCCC"))
+
+p = ggplot(m, aes(variable, fill = Taxa)) + geom_bar(aes(weight = value), position = position_fill(reverse = TRUE)) + 
+    theme_bw(base_size = 8) + facet_grid(~collection, scales = "free", space ="free") +  col + ylab("Relative abundance") + xlab("Sample names") + theme(legend.text = element_text(face = "italic")) + guides(fill = guide_legend(ncol = 1, reverse=TRUE, keyheight = 0.55)) + scale_y_continuous(labels = percent_format()) + labs(title="") + theme(plot.title = element_text(size = 20))+theme(axis.text.x = element_text(angle = 90, hjust=0.02, vjust=0.5))
+p$data$Taxa = factor(p$data$Taxa, ordered = TRUE, levels = who)
+
+plot(p) ##Supplementary figure 2
+```
+
+\newpage
+Principal coordinate analysis based on B-C dissimlarity
+
+```{r pcoa_bray_exam_results_tax, echo=TRUE, message=FALSE, warning=FALSE}
+# calculate bray curtis dissimilarity
+bray_biomass = vegdist(biomass_gen_filt, "bray")
+
+#Do the corrdinate analysis
+pc = capscale(bray_biomass~1, comm = biomass_gen_filt)
+cap = data.frame(pc$CA$u)
+cap = merge(biomass_meta, cap, by.x = "Sequencer.Name", by.y = "row.names")
+rownames(cap) = cap[,1]
+cap = cap[,2:ncol(cap)]
+s = summary(pc)
+
+cap$Collection = gsub("Computer screen", "Screen", cap$Collection)
+cap$Collection = gsub("Computer mouse", "Mouse", cap$Collection)
+cap$Collection = ordered(cap$Collection, c("Screen", "Mouse", "Saliva", "Soil"))
+col_sample = c("Screen" ="#782856", "Mouse" = "#a38fa6", "Saliva" = "#6ca895", "Soil" = "#a5d9b9" )
+
+png("pcoa_bray_source_pma.png", height = 5, width = 5, units = "in", res = 600)
+p = ggplot(cap, aes(MDS1, MDS2,  group = match)) + geom_point(aes(color = Collection, shape = DNA.or.cDNA), size = 4, alpha = 0.7) + geom_line() + theme_bw(base_size = 8) + scale_color_manual(values = col_sample) + coord_fixed() +
+  labs(color = "Sample type", shape = "Library", title="", 
+       x = paste("PC 1 (", round(s$cont$importance[2,1]*100, digits =2), "%)", sep = ''),
+        y = paste("PC 2 (", round(s$cont$importance[2,2]*100, digits =2), "%)", sep = ''))
+p
+#dev.off()
+
+#Remove contaimed samples
+cap = subset(cap, !cap$Sample=="saliva1")
+cap = subset(cap, !cap$Sample=="soil1")
+cap$Collection = ordered(cap$Collection, c("Screen", "Mouse", "Saliva", "Soil"))
+p = ggplot(cap, aes(MDS1, MDS2,  group = match)) + geom_point(aes(color = Collection, shape = DNA.or.cDNA), size = 4, alpha = 0.7) + geom_line() + theme_bw(base_size = 8) + scale_color_manual(values = col_sample) + coord_fixed() +
+  labs(color = "Sample type", shape = "Library", title="", 
+       x = paste("PC 1 (", round(s$cont$importance[2,1]*100, digits =2), "%)", sep = ''),
+        y = paste("PC 2 (", round(s$cont$importance[2,2]*100, digits =2), "%)", sep = ''))
+p #Figure 2c
+
+#dev.off()
+
+#Check first explanatory axis
+anova(lm(cap$MDS1 ~ Collection, data = cap))
+```
+
+
+```{r boxplot_bray_distance, echo = FALSE, warning = FALSE, message = FALSE}
+bray_df = as.matrix(bray_biomass)
+bray_df = melt(bray_df)
+bray_df = bray_df[bray_df$Var1 != bray_df$Var2, ]
+bray_df = cbind(biomass_meta[ match(bray_df$Var1, biomass_meta$Sequencer.Name), "Collection"], bray_df)
+bray_df = cbind(biomass_meta[ match(bray_df$Var1, biomass_meta$Sequencer.Name), "match"], bray_df)
+bray_df = cbind(biomass_meta[ match(bray_df$Var2, biomass_meta$Sequencer.Name), "match"], bray_df)
+bray_df = cbind(biomass_meta[ match(bray_df$Var1, biomass_meta$Sequencer.Name), "DNA.or.cDNA"], bray_df)
+bray_df = cbind(biomass_meta[ match(bray_df$Var1, biomass_meta$Sequencer.Name), "Spike.in"], bray_df)
+names(bray_df) = c("Spike", "Library", "match_var2", "match_var1", "collection", "var1", "var2", "bray")
+
+bray_df$Spike = gsub("No", "Spike-", bray_df$Spike)
+bray_df$Spike = gsub("102-3CFU/ml", "Spike+", bray_df$Spike)
+bray_df$Spike = gsub("105-6CFU/ml", "Spike+", bray_df$Spike)
+bray_df$collection = gsub("Computer screen", "Screen", bray_df$collection)
+bray_df$collection = gsub("Computer mouse", "Mouse", bray_df$collection)
+
+bray_df_sub = bray_df[bray_df$match_var1 == bray_df$match_var2, ]
+bray_df_sub = subset(bray_df_sub, Library == "DNA")
+bray_df_sub$collection = ordered(bray_df_sub$collection, c("Screen", "Mouse", "Saliva", "Soil"))
+bray_df_sub <- na.omit(bray_df_sub)
+
+col_sample = c("Screen" ="#782856", "Mouse" = "#a38fa6", "Soil" = "#6ca895", "Saliva" = "#a5d9b9" )
+names(col_sample) = levels(as.factor(bray_df_sub$collection))
+```
+
+```{r boxplot_bray_distance paired samples, echo = FALSE, warning = FALSE, message = FALSE}
+biomass_meta$collection_spike_library = paste(biomass_meta$Collection, biomass_meta$Spike.in, biomass_meta$DNA.or.cDNA, sep = "_")
+bray_df$collection_spike_library = paste(bray_df$collection, bray_df$Spike, bray_df$Library, sep = "_")
+bray_df = cbind(biomass_meta[ match(bray_df$var1, biomass_meta$Sequencer.Name), "collection_spike_library"], bray_df)
+bray_df = cbind(biomass_meta[ match(bray_df$var2, biomass_meta$Sequencer.Name), "collection_spike_library"], bray_df)
+names(bray_df) = c("col_var2","col_var1","Spike", "Library", "match_var2", "match_var1", "collection", "var1", "var2", "bray", "collection_spike_PMA")
+
+bray_df_sub1 = bray_df[bray_df$col_var2 == bray_df$col_var1, ]
+bray_df_sub1 = bray_df_sub1[bray_df_sub1$collection != "control", ]
+bray_df_sub1$col_library=paste(bray_df_sub1$collection, bray_df_sub1$Library, sep = "_")
+bray_df_sub1$col_library = ordered(bray_df_sub1$col_library, c("Screen_DNA", "Screen_RNA","Mouse_DNA", "Mouse_RNA",  "Saliva_DNA", "Saliva_RNA", "Soil_DNA", "Soil_RNA"))
+names(col_sample) = levels(as.factor(bray_df_sub1$collection))
+
+#Three paired boxplots
+bray_df_sub2 = bray_df[bray_df$match_var1 == bray_df$match_var2, ]
+bray_df_sub2 = bray_df_sub2[bray_df_sub2$collection != "control", ]
+bray_df_sub2 = subset(bray_df_sub2, Library == "DNA")
+bray_df_sub2$col_library= paste(bray_df_sub2$collection, "between", sep = "_")
+
+bray_df_sub2=rbind(bray_df_sub1, bray_df_sub2)
+
+bray_df_sub2$collection = ordered(bray_df_sub2$collection, c("Screen", "Mouse", "Saliva", "Soil"))
+names(col_sample) = levels(as.factor(bray_df_sub2$collection))
+bray_df_sub2$col_library = gsub("_DNA", "(DNA)", bray_df_sub2$col_library)
+bray_df_sub2$col_library = gsub("_RNA", "(RNA)", bray_df_sub2$col_library)
+bray_df_sub2$col_library = gsub("_between", "(between)", bray_df_sub2$col_library)
+
+bray_df_sub2$col_library = ordered(bray_df_sub2$col_library, c("Screen(DNA)", "Screen(RNA)","Screen(between)","Mouse(DNA)", "Mouse(RNA)", "Mouse(between)", "Saliva(DNA)", "Saliva(RNA)", "Saliva(between)","Soil(DNA)", "Soil(RNA)", "Soil(between)"))
+
+col_sample = c("Screen" ="#782856", "Mouse" = "#a38fa6", "Saliva" = "#6ca895", "Soil" = "#a5d9b9" )
+
+#Remove contaimed samples
+bray_df_sub2=subset(bray_df_sub2, !bray_df_sub2$match_var1=="Soil_1")
+bray_df_sub2=subset(bray_df_sub2, !bray_df_sub2$match_var2=="Soil_1")
+bray_df_sub2=subset(bray_df_sub2, !bray_df_sub2$match_var1=="Saliva_1")
+bray_df_sub2=subset(bray_df_sub2, !bray_df_sub2$match_var2=="Saliva_1")
+bray_df_sub2=subset(bray_df_sub2, !bray_df_sub2$match_var1=="Spike_Soil_1")
+bray_df_sub2=subset(bray_df_sub2, !bray_df_sub2$match_var2=="Spike_Soil_1")
+bray_df_sub2=subset(bray_df_sub2, !bray_df_sub2$match_var1=="Spike_Saliva_1")
+bray_df_sub2=subset(bray_df_sub2, !bray_df_sub2$match_var2=="Spike_Saliva_1")
+p = ggplot(bray_df_sub2, aes(x = col_library, y = bray, fill = collection)) + geom_boxplot() + theme_bw(base_size = 8) + xlab("Average distance within sample types") + ylab("Bray-Curtis Distance") + facet_grid(~Spike, space = "free", scales = "free") + labs(fill = "Sample type") + theme(axis.text.x = element_text(angle = 90, hjust=1, vjust=0.5)) + scale_fill_manual(values = col_sample) + ylim(0, 1)
+p ##Figure 2b
+
+#dev.off()
+```
+
+\newpage
+###Beta diversity statistics: Using PERMANOVA on dissimilarity matrix
+#### Univariate- Bray-Curtis dissimilarity
+```{r adonis_univariate_tax_bray, echo = FALSE, warning = FALSE, message = FALSE}
+#Order the row names
+meta_dat_biomass = biomass_meta
+meta_dat_biomass = subset(meta_dat_biomass, !meta_dat_biomass$Sample == "soil1")
+meta_dat_biomass = subset(meta_dat_biomass, !meta_dat_biomass$Sample == "saliva1")
+biomass_gen_filt = subset(biomass_gen_filt, row.names(biomass_gen_filt) %in% meta_dat_biomass$Sequencer.Name)
+
+#row.names(meta_dat_biomass)=meta_dat_biomass$Sequencer.Name
+meta_dat_biomass= meta_dat_biomass[order(match(meta_dat_biomass$Sequencer.Name, row.names(biomass_gen_filt))),]
+
+adonis_res_pval = vector()
+adonis_res_rsq = vector()
+
+for (col in names(meta_dat_biomass[, c(5:6,8)])){
+  adonis.univ = adonis(as.formula(paste("biomass_gen_filt~", col)), data = meta_dat_biomass[, c(5:6,8)], permutations = 999, distance = 'bray')
+  adonis_res_pval[col] = adonis.univ$aov.tab[1,]$`Pr(>F)`
+  adonis_res_rsq[col] = adonis.univ$aov.tab[1,]$R2
+}
+
+univar_res_tax = rbind(adonis_res_pval, adonis_res_rsq)
+univar_res_tax = as.data.frame(t(univar_res_tax))
+names(univar_res_tax) = c("P-Value", "R2")
+univar_res_tax$`P-Value` = as.numeric(univar_res_tax$`P-Value`)
+univar_res_tax$R2 = as.numeric(univar_res_tax$R2)
+univar_res_tax$p_adj = p.adjust(univar_res_tax$`P-Value`, "fdr")
+
+univar_res_tax ##Supplementary 3_AdonisTests
+
+#between collection and library
+set.seed(100)
+adonis.univ = adonis(biomass_gen_filt~Collection*DNA.or.cDNA, data = meta_dat_biomass, permutations = 999, distance = 'bray')
+#adonis.univ = adonis(biomass_gen_filt~Collection:PMA.treatment, data = meta_dat_biomass, permutations = 999, distance = 'bray')
+adonis.univ$aov.tab$p_adj = p.adjust(adonis.univ$aov.tab$`Pr(>F)`, "fdr")
+adonis.univ$aov.tab
+#Check collection independently
+adonis_result_otu <- adonis(biomass_gen_filt~Collection, meta_dat_biomass, permutations = 999, distance = 'bray') 
+adonis_result_otu 
+#Check pairwise
+bray_mat = as.matrix(bray_biomass)
+meta_dat_biomass= meta_dat_biomass[order(match(row.names(meta_dat_biomass), row.names(bray_mat))),]
+
+library("pairwiseAdonis")
+path_pair_dia = pairwise.adonis(bray_mat, factors = meta_dat_biomass$Collection, p.adjust.m = "BH")
+path_pair_dia
+path_pair_dia = pairwise.adonis(bray_mat, factors = meta_dat_biomass$PMA.treatment, p.adjust.m = "BH")
+path_pair_dia
+```
+
+Bar plot of R-square value, annotated with the p-value for each covariate
+
+```{r barplot_univ_statistics, echo= FALSE, warning = FALSE, message = FALSE }
+univar_res_tax$`P-Value` = round(univar_res_tax$`P-Value`, 3)
+univar_res_tax$R2 = univar_res_tax$R2 *100
+names = c("DNA or RNA", "Spike-in", "Sample type")
+univar_res_tax$label = names
+
+#png("bray_permanova_biomass.png", height = 3, width = 5, units = "in", res = 600)
+ggplot(univar_res_tax, aes(x = label, y = R2)) + geom_bar(stat = "identity", fill = "#800000", color = "black", position = "dodge", width = 0.8) + theme_bw(base_size = 18) + ylab("Univarate R-squared (%)") + coord_flip() + scale_x_discrete(limits = rev(levels(univar_res_tax$label))) + geom_text(aes(label = univar_res_tax$p_adj, x = label, y = R2), position = position_dodge(width = 0.8), vjust = 0.5, hjust = -0.1) + ylim(0, 100) + xlab("") 
+#dev.off()
+```
+
+
+```{r box_plot_spikedEC, echo = FALSE, warning = FALSE, message = FALSE}
+Copies_all = metadata
+Copies_all$Sequencer.Names = meta_dat[ match(Copies_all$Sample.Name, meta_dat$Sample.Name), "Sequencer.Name"]
+Copies_all$EC = tax_filt[match(Copies_all$Sequencer.Names, row.names(tax_filt)), "f__Enterobacteriaceae"]
+Copies_all$collection = meta_dat[match(Copies_all$Sample.Name, meta_dat$Sample.Name), "Collection"]
+Copies_all$source_library = paste(Copies_all$collection, Copies_all$Spike.in, sep = "_")
+Copies_all$source_library = paste(Copies_all$source_library, Copies_all$DNA.or.cDNA, sep = "_")
+
+Copies_all$source_library=gsub("_No", "", Copies_all$source_library)
+Copies_all$source_library=gsub("_102-3CFU/ml", "_Spike", Copies_all$source_library)
+Copies_all$source_library=gsub("_105-6CFU/ml", "_Spike", Copies_all$source_library)
+Copies_all$source_library=gsub("Computer screen", "Screen", Copies_all$source_library)
+Copies_all$source_library=gsub("Computer mouse", "Mouse", Copies_all$source_library)
+
+EC = subset(Copies_all, Copies_all$source == "Environ spike in")
+EC$source_library = ordered(EC$source_library, c("Screen_DNA", "Screen_RNA", "Screen_Spike_DNA", "Screen_Spike_RNA", "Mouse_DNA", "Mouse_RNA", "Mouse_Spike_DNA", "Mouse_Spike_RNA", "Saliva_DNA","Saliva_RNA", "Saliva_Spike_DNA", "Saliva_Spike_RNA", "Soil_DNA", "Soil_RNA", "Soil_Spike_DNA", "Soil_Spike_RNA"))
+
+library(viridis)
+col_sample = c("Computer screen" ="#782856", "Computer mouse" = "#a38fa6", "Saliva" = "#6ca895", "Soil" = "#a5d9b9" )
+ggplot(EC, aes(x= source_library, y = log10_qPCR, color = collection)) + geom_boxplot(lwd = 1) + theme_classic(base_size = 12) + labs(fill = "Source and library")  + xlab("Collection Soure; DNA or RNA") + ylab("log10 16S copies") + theme(axis.text.x = element_text(angle = 90, hjust=1, vjust=0.5)) + scale_color_manual(values = col_sample) 
+
+ggplot(EC, aes(x= source_library, y = EC, color = collection)) + geom_boxplot(lwd = 1) + theme_classic(base_size = 12) + labs(fill = "Source and library")  + xlab("Collection Soure; DNA or RNA") + ylab("EC Relative abundance") + theme(axis.text.x = element_text(angle = 90, hjust=1, vjust=0.5)) + scale_color_manual(values = col_sample) 
+
+```
+
+#Question #3: MBTA
+
+\newpage
+#Visualize covariates
+##Sample type of all samples from all three experiment types
+
+\newpage
+# Taxonomy
+Data from usearch species results:
+```{r bray_tax, echo = FALSE, warning = FALSE, message = FALS, fig.height= 4, fig.width= 6}
+# calculate bray curtis dissimilarity
+MBTA_meta = subset(meta_dat, source  == "MBTA")
+MBTA_otu = otu[, names(otu) %in% MBTA_meta$Sequencer.Name]
+MBTA_otu = MBTA_otu[rowSums(MBTA_otu) > 32, ]
+MBTA_gen_filt = tax_filt[row.names(tax_filt) %in% MBTA_meta$Sequencer.Name, ]
+
+library(viridis)
+MBTA_meta$Collection = droplevels(MBTA_meta$Collection)
+bray_MBTA = vegdist(MBTA_gen_filt, "bray")
+
+#Do the corrdinate analysis
+pc = capscale(bray_MBTA~1, comm = MBTA_gen_filt)
+cap = data.frame(pc$CA$u)
+cap = merge(MBTA_meta, cap, by.x = "Sequencer.Name", by.y = "row.names")
+rownames(cap) = cap[,1]
+cap = cap[,2:ncol(cap)]
+s = summary(pc)
+```
+
+\newpage
+#### Visualized as stacked barplots
+
+```{r composition_tax, include=FALSE}
+#Creating bar plots for visualizations
+who = names(sort(colMeans(MBTA_gen_filt), decreasing = TRUE))[1:15]
+f = MBTA_gen_filt[,names(MBTA_gen_filt) %in% who]
+#Sort f by most abundant taxa
+f = f[order(colMeans(f), decreasing = T)]
+# adding in other taxa as a column for display
+f$Other = 1-rowSums(f)
+who = c(who, "Other")
+f$sample = MBTA_meta[match(row.names(f), MBTA_meta$Sequencer.Name), "Sample.Name"]
+row.names(f) = f$sample
+f$sample = NULL
+
+# now order samples (rows) by the most abundant taxon/Sort the x-axis by most abundant
+f = f[order(f[1], decreasing = T ), ]
+f = data.frame(t(f))
+head(f)
+names(f) = gsub("^X", "", names(f))
+head(f)
+f$Taxa <- row.names(f)
+
+m.part3 = melt(f)
+m.part3$variable = gsub("\\.", "_", m.part3$variable)
+MBTA_meta$Sample.Name = gsub("-", "_", MBTA_meta$Sample.Name)
+# add the groups into the analysis
+m.part3$collection = MBTA_meta[ match(m.part3$variable, MBTA_meta$Sample.Name), "Collection" ]
+m.part3$Library = MBTA_meta[ match(m.part3$variable, MBTA_meta$Sample.Name ), "DNA.or.cDNA" ]
+m.part3$sample = MBTA_meta[ match(m.part3$variable, MBTA_meta$Sample.Name ), "Sample" ]
+
+col = scale_fill_manual(values = c("f__Enterobacteriaceae" = "#80B1D3", "g__Streptococcus" = "#FCCDE5", "o__Streptophyta"="#BC80BD", "g__Sphingomonas"="#E7298A", "g__Hymenobacter"="#3288BD","f__Xenococcaceae"="#5E4FA2","g__Anaerococcus"="#FFED6F", "g__Lactobacillus"="#B3DE69","g__Staphylococcus"="#8e4ae0","g__Pseudomonas"="#FB8072", "g__Haemophilus"="#FFFFB3", "g__Acinetobacter"="#8DD3C7", "g__Corynebacterium"="#00008B", "f__Acetobacteraceae"="#F46D43", "g__Methylobacterium"="#edcf6d", "Other"="#CCCCCC"))
+```
+
+Bar plot of the top 16 abundant taxa in study faceted by culture type
+```{r bar_genus_by_diabetes_tax, echo = FALSE, warning = FALSE, message = FALSE, fig.width=8, fig.height=3}
+m.part3$Library = ordered(m.part3$Library, c("DNA", "RNA"))
+m.part3$collection=gsub("MBTA ", "", m.part3$collection)
+m.part3$collection=gsub("grip", "Grip", m.part3$collection)
+m.part3$collection=gsub("seat", "Seat", m.part3$collection)
+m.part3$collection=gsub("touchscreen", "Touchscreen", m.part3$collection)
+m.part3$collection=gsub("wall", "Wall", m.part3$collection)
+m.part3$collection = ordered(m.part3$collection, c("Seat", "Wall", "Grip", "Touchscreen"))
+
+#Remove ts1
+#m.part3 = subset(m.part3, !m.part3$sample == "MBTA_touchscreen_1")
+p = ggplot(m.part3, aes(sample, fill = Taxa)) + geom_bar(aes(weight = value), position = position_fill(reverse = TRUE)) + 
+  theme_bw(base_size = 10) + facet_grid(~collection + Library, scales = "free", space ="free")  + col + xlab("Sample") + ylab("Relative abundance") + theme(legend.text = element_text(face = "italic")) + guides(fill = guide_legend(ncol = 1, reverse=TRUE, keyheight = 0.55)) + scale_y_continuous(labels = percent_format()) + labs(title="") + theme(plot.title = element_text(size = 20)) + theme(panel.spacing = unit(0.1, "lines"))
+p$data$Taxa = factor(p$data$Taxa, ordered = TRUE, levels = who)
+
+p = p + theme(axis.title.x=element_blank(),
+        axis.text.x=element_blank(),
+        axis.ticks.x=element_blank())
+#p+ theme(axis.text.x = element_text())
+print(p) ## Figure 3a
+#dev.off()
+
+#add space between each sample types (here add space after 8th, 20th and 28th columns)
+library(grid)
+gt = ggplot_gtable(ggplot_build(p))
+gt$widths[8] = 10*gt$widths[8]
+gt$widths[12] = 10*gt$widths[12]
+gt$widths[16] = 10*gt$widths[16]
+grid.draw(gt) #Figure 3a
+
+#dev.off()
+```
+\newpage
+Principal coordinate analysis 
+
+```{r pcoa_bray_exam_results_tax, echo = FALSE, warning = FALSE, message = FALSE}
+pc = capscale(bray_MBTA~1, comm = MBTA_gen_filt)
+cap = data.frame(pc$CA$u)
+cap = merge(MBTA_meta, cap, by.x = "Sequencer.Name", by.y = "row.names")
+rownames(cap) = cap[,1]
+cap = cap[,2:ncol(cap)]
+s = summary(pc)
+
+cap$Collection=gsub("MBTA ", "", cap$Collection)
+cap$Collection=gsub("grip", "Grip", cap$Collection)
+cap$Collection=gsub("seat", "Seat", cap$Collection)
+cap$Collection=gsub("touchscreen", "Touchscreen", cap$Collection)
+cap$Collection=gsub("wall", "Wall", cap$Collection)
+cap = subset(cap, !cap$Sample=="MBTA_touchscreen_1")
+cap$Collection = ordered(cap$Collection, c("Seat", "Wall", "Grip", "Touchscreen"))
+
+col_sample = c("Seat" = "#6e92cc", "Wall" = "#f2e85e", "Grip" = "#7334ad", "Touchscreen" = "#a4bfa8")
+png("pcoa_bray_MBTA_source.png", height = 3.8, width = 3.3, units = "in", res = 600)
+p=ggplot(cap, aes(MDS1, MDS2,  group = match)) + geom_point(aes(color = Collection, shape = DNA.or.cDNA), size = 4, alpha = 0.7) + geom_line() + theme_bw(base_size = 8) + scale_color_manual(values = col_sample) + coord_fixed() +
+  labs(color = "Sample type", shape = "Library", title="", 
+       x = paste("PC 1 (", round(s$cont$importance[2,1]*100, digits =2), "%)", sep = ''),
+        y = paste("PC 2 (", round(s$cont$importance[2,2]*100, digits =2), "%)", sep = ''))
+p ##Figure 3c
+dev.off()
+```
+
+
+```{r boxplot_bray_distance, echo = FALSE, warning = FALSE, message = FALSE}
+bray_df = as.matrix(bray_MBTA)
+bray_df = melt(bray_df)
+bray_df = bray_df[bray_df$Var1 != bray_df$Var2, ]
+bray_df = cbind(cap[ match(bray_df$Var1, row.names(cap)), "Collection"], bray_df)
+bray_df = cbind(MBTA_meta[ match(bray_df$Var1, MBTA_meta$Sequencer.Name), "match"], bray_df)
+bray_df = cbind(MBTA_meta[ match(bray_df$Var2, MBTA_meta$Sequencer.Name), "match"], bray_df)
+bray_df = cbind(MBTA_meta[ match(bray_df$Var1, MBTA_meta$Sequencer.Name), "DNA.or.cDNA"], bray_df)
+names(bray_df) = c("library", "match_var2", "match_var1", "collection", "var1", "var2", "bray")
+bray_df_sub = bray_df[bray_df$match_var1 == bray_df$match_var2, ]
+bray_df_sub = subset(bray_df_sub, library == "DNA")
+
+bray_df_sub$collection = ordered(bray_df_sub$collection, c("Seat", "Wall", "Grip", "Touchscreen"))
+```
+
+```{r boxplot_bray_distance_paired, echo = FALSE, warning = FALSE, message = FALSE}
+MBTA_meta$col_library=paste(MBTA_meta$Collection, MBTA_meta$DNA.or.cDNA, sep = "_")
+bray_df = cbind(MBTA_meta[ match(bray_df$var1, MBTA_meta$Sequencer.Name), "col_library"], bray_df)
+bray_df = cbind(MBTA_meta[ match(bray_df$var2, MBTA_meta$Sequencer.Name), "col_library"], bray_df)
+names(bray_df)[1] <- "col_var2"
+names(bray_df)[2] <- "col_var1"
+
+bray_df_sub1 = bray_df[bray_df$col_var2 == bray_df$col_var1, ]
+bray_df_sub1$col_library = paste(bray_df_sub1$collection, bray_df_sub1$library, sep = "_")
+bray_df_sub1$col_library = gsub("_DNA", "(DNA)", bray_df_sub1$col_library)
+bray_df_sub1$col_library = gsub("_RNA", "(RNA)", bray_df_sub1$col_library)
+bray_df_sub1$col_library = gsub("_between", "(between)", bray_df_sub1$col_library)
+bray_df_sub1$col_library = ordered(bray_df_sub1$col_library, c("Seat(DNA)", "Seat(RNA)","Wall(DNA)", "Wall(RNA)","Grip(DNA)", "Grip(RNA)","Touchscreen(DNA)", "Touchscreen(RNA)"))
+
+#Three paired boxplots
+bray_df_sub2 = bray_df[bray_df$match_var1 == bray_df$match_var2, ]
+bray_df_sub2 = subset(bray_df_sub2, library == "DNA")
+
+bray_df_sub2$col_library = paste(bray_df_sub2$collection, "between", sep = "_")
+bray_df_sub2$col_library = gsub("_between", "(between)", bray_df_sub2$col_library)
+
+bray_df_sub1 = na.omit(bray_df_sub1)
+bray_df_sub2=rbind(bray_df_sub1, bray_df_sub2)
+bray_df_sub2 = na.omit(bray_df_sub2)
+
+names(col_sample) = levels(as.factor(bray_df_sub2$collection))
+bray_df_sub2$col_library = ordered(bray_df_sub2$col_library,c("Seat(DNA)", "Seat(RNA)","Seat(between)","Wall(DNA)", "Wall(RNA)","Wall(between)","Grip(DNA)", "Grip(RNA)","Grip(between)","Touchscreen(DNA)", "Touchscreen(RNA)","Touchscreen(between)"))
+
+bray_df_sub2=subset(bray_df_sub2, !bray_df_sub2$match_var2 == "t1")
+bray_df_sub2=subset(bray_df_sub2, !bray_df_sub2$match_var1 == "t1")
+
+col_sample = c("Seat" = "#6e92cc", "Wall" = "#f2e85e", "Grip" = "#7334ad", "Touchscreen" = "#a4bfa8")
+png("change_in_bray_library_MBTA.png", height = 3, width = 5, units = "in", res = 600)
+p = ggplot(bray_df_sub2, aes(x = col_library, y = bray, fill = collection)) + geom_boxplot() + theme_bw(base_size = 8) + xlab("Average distance within sample types") + ylab("Bray-Curtis Distance")  + labs(fill = "Sample type") + 
+  theme(axis.text.x = element_text(angle = 90, hjust=1, vjust=0.5)) + scale_fill_manual(values = col_sample)
+p ##Figure 3b
+#dev.off()
+```
+\newpage
+###Beta diversity statistics: Using PERMANOVA on dissimilarity matrix
+
+#### Univariate- Bray-Curtis dissimilarity
+```{r adonis_univariate_tax_bray, echo = FALSE, warning = FALSE, message = FALSE}
+#MBTA_meta = subset(MBTA_meta, !MBTA_meta$match == "t1")
+row.names(MBTA_meta)=MBTA_meta$Sequencer.Name
+MBTA_gen_filt = subset(MBTA_gen_filt, row.names(MBTA_gen_filt) %in% row.names(MBTA_meta))
+MBTA_meta=MBTA_meta[ order(match(row.names(MBTA_meta), row.names(MBTA_gen_filt))), ]
+
+set.seed(100)
+adonis_res_pval = vector()
+adonis_res_rsq = vector()
+for (col in names(MBTA_meta[, c(5,8)])){
+  adonis.univ = adonis(as.formula(paste("MBTA_gen_filt ~", col)), data = MBTA_meta[, c(5,8)],permutations = 999, distance = 'bray' )
+  adonis_res_pval[col] = adonis.univ$aov.tab[1,]$`Pr(>F)`
+  adonis_res_rsq[col] = adonis.univ$aov.tab[1,]$R2
+}
+
+univar_res_tax = rbind(adonis_res_pval, adonis_res_rsq)
+univar_res_tax = as.data.frame(t(univar_res_tax))
+names(univar_res_tax) = c("P-Value", "R2")
+univar_res_tax$`P-Value` = as.numeric(univar_res_tax$`P-Value`)
+univar_res_tax$R2 = as.numeric(univar_res_tax$R2)
+univar_res_tax$p_adj = p.adjust(univar_res_tax$`P-Value`, "fdr")
+
+univar_res_tax
+```
+
+
+
+```{r maaslin, include = FALSE}
+library(Maaslin2) ##statsitical calculation using maaslin2
+MBTA_meta$Sample.Name = gsub("-", "_", MBTA_meta$Sample.Name)
+MBTA_gen_filt$sample = MBTA_meta[match(row.names(MBTA_gen_filt), MBTA_meta$Sequencer.Name), "Sample.Name"]
+row.names(MBTA_gen_filt) = MBTA_gen_filt$sample
+MBTA_gen_filt$sample = NULL
+row.names(MBTA_meta) = MBTA_meta$Sample.Name
+MBTA_meta_maas = MBTA_meta[, c(5,8)]
+
+MBTA_gen_filt$collection = MBTA_meta[match(row.names(MBTA_gen_filt), MBTA_meta$Sample.Name), "Collection"]
+Seat = MBTA_gen_filt[MBTA_gen_filt$collection == "MBTA seat",] %>% select(-collection)
+Wall = MBTA_gen_filt[MBTA_gen_filt$collection == "MBTA wall",]%>% select(-collection)
+Grip = MBTA_gen_filt[MBTA_gen_filt$collection == "MBTA grip",]%>% select(-collection)
+Touchscreen = MBTA_gen_filt[MBTA_gen_filt$collection == "MBTA touchscreen",]%>% select(-collection)
+
+Seat_meta= MBTA_meta_maas[row.names(MBTA_meta_maas)%in% row.names(Seat),]%>% select(-Collection)
+Wall_meta= MBTA_meta_maas[row.names(MBTA_meta_maas)%in% row.names(Wall),]%>% select(-Collection)
+Grip_meta= MBTA_meta_maas[row.names(MBTA_meta_maas)%in% row.names(Grip),]%>% select(-Collection)
+Touchscreen_meta= MBTA_meta_maas[row.names(MBTA_meta_maas)%in% row.names(Touchscreen),]%>% select(-Collection)
+
+Maaslin2(Seat, Seat_meta, "maaslin2_seat", 
+         normalization = "NONE",
+         min_prevalence = 0,
+         reference = c("DNA.or.cDNA, DNA"),
+         plot_heatmap = TRUE)
+Maaslin2(Wall, Wall_meta, "maaslin2_wall", 
+         normalization = "NONE",
+         min_prevalence = 0,
+         reference = c("DNA.or.cDNA, DNA"),
+         plot_heatmap = TRUE)
+Maaslin2(Grip, Grip_meta, "maaslin2_grip", 
+         normalization = "NONE",
+         min_prevalence = 0,
+         reference = c("DNA.or.cDNA, DNA"),
+         plot_heatmap = TRUE)
+Maaslin2(Touchscreen, Touchscreen_meta, "maaslin2_ts", 
+         normalization = "NONE",
+         min_prevalence = 0,
+         reference = c("DNA.or.cDNA, DNA"),
+         plot_heatmap = TRUE)
+
+#Plot f__Acetobacteraceae; 
+tax_test = MBTA_gen_filt
+tax_test$collection = MBTA_meta[match(row.names(tax_test), MBTA_meta$Sample.Name), "Collection"]
+tax_test$collection = gsub("MBTA ", "", tax_test$collection)
+tax_test$match = MBTA_meta[ match(row.names(tax_test), MBTA_meta$Sample.Name), "match"]
+tax_test$library = MBTA_meta[ match(row.names(tax_test), MBTA_meta$Sample.Name), "DNA.or.cDNA"]
+tax_test$source_library = paste(tax_test$collection, tax_test$library, sep = "_") 
+tax_test$source_library = gsub("_DNA", "(DNA)", tax_test$source_library)
+tax_test$source_library = gsub("_RNA", "(RNA)", tax_test$source_library)
+tax_test$source_library = gsub("seat", "Seat", tax_test$source_library)
+tax_test$source_library = gsub("wall", "Wall", tax_test$source_library)
+tax_test$source_library = gsub("grip", "Grip", tax_test$source_library)
+tax_test$source_library = gsub("touchscreen", "Touchscreen", tax_test$source_library)
+
+col_sample_box = c("Grip(RNA)" = "#440154FF", "Grip(DNA)" = "#9370DB", "Seat(RNA)" = "#000080", "Seat(DNA)" = "#31688EFF", "Touchscreen(RNA)" = "#006400", "Touchscreen(DNA)" = "#35B779FF",  "Wall(RNA)" = "#FFA500", "Wall(DNA)" = "#FDE725FF")
+
+tax_test$source_library = ordered(tax_test$source_library, c("Seat(DNA)", "Seat(RNA)", "Wall(DNA)", "Wall(RNA)", "Grip(DNA)", "Grip(RNA)", "Touchscreen(DNA)", "Touchscreen(RNA)"))
+
+png("Acetobacteraceae.png", height = 5, width = 5, units = "in", res = 600) ##Figure 3d
+ggplot(tax_test, aes(x= source_library, y = f__Acetobacteraceae, fill = source_library)) + geom_boxplot(lwd = 1) + theme_classic(base_size = 12) + labs(fill = "Libraries")   + ylab("Relative Abundance") + scale_fill_manual(values = col_sample_box)+ theme(axis.text.x = element_text(angle = 90, hjust=1, vjust=0.5)) + geom_jitter(shape=16, position=position_jitter(0.2)) + theme(legend.position = "none")
+
+
+png("Prevotella.png", height = 5, width = 5, units = "in", res = 600)##Figure 3d
+ggplot(tax_test, aes(x= source_library, y = g__Prevotella, fill = source_library)) + geom_boxplot(lwd = 1) + theme_classic(base_size = 12) + labs(fill = "Libraries")   + ylab("Relative Abundance") + scale_fill_manual(values = col_sample_box)+ theme(axis.text.x = element_text(angle = 90, hjust=1, vjust=0.5)) + geom_jitter(shape=16, position=position_jitter(0.2)) + theme(legend.position = "none")
+
+png("Solirubrobacter.png", height = 5, width = 5, units = "in", res = 600)##Figure 3d
+ggplot(tax_test, aes(x= source_library, y = g__Solirubrobacter, fill = source_library)) + geom_boxplot(lwd = 1) + theme_classic(base_size = 12) + labs(fill = "Libraries")   + ylab("Relative Abundance") + scale_fill_manual(values = col_sample_box)+ theme(axis.text.x = element_text(angle = 90, hjust=1, vjust=0.5)) + geom_jitter(shape=16, position=position_jitter(0.2)) + theme(legend.position = "none")
+
+png("Streptophyta.png", height = 5, width = 5, units = "in", res = 600)##Figure 3d
+ggplot(tax_test, aes(x= source_library, y = o__Streptophyta, fill = source_library)) + geom_boxplot(lwd = 1) + theme_classic(base_size = 12) + labs(fill = "Libraries")   + ylab("Relative Abundance") + scale_fill_manual(values = col_sample_box)+ theme(axis.text.x = element_text(angle = 90, hjust=1, vjust=0.5)) + geom_jitter(shape=16, position=position_jitter(0.2)) + theme(legend.position = "none")
+
+#dev.off()
+```
+
+Part 4 Meta-analysis of our + previous samples
+```{r setup, include=FALSE}
+#Read in the total metadata
+metadata_all = read.csv("~/Dropbox (Harvard University)/hutlab/Lea/Manuscript/RNA_manuscript/sup/Supple_5_metadataAll.csv", sep = ",", header = T)
+tax_all = read.csv("~/Dropbox (Harvard University)/hutlab/Lea/Manuscript/RNA_manuscript/sup/Supple_4_OTU_all.csv", sep = ",", header = T, row.names = 1)
+names(tax_all) = gsub("20200109_", "", names(tax_all))
+names(tax_all) = gsub("_YY7519_S*", "", names(tax_all))
+names(tax_all) = gsub("X", "", names(tax_all))
+otu_all = tax_all
+otu_all$taxonomy = NULL
+trans_otu_all = as.data.frame(t(otu_all))
+
+#split off the taxonomy and start to modify 
+tax_levels = strsplit(as.character(tax_all$taxonomy), split = "; ", fixed = TRUE)
+tax_levels = as.matrix(t(sapply(tax_levels, function(x) x)))
+row.names(tax_levels) = row.names(tax_all)
+colnames(tax_levels) = c("Domain", "Phylum", "Class", "Order", "Family", "Genus", "Species")
+tax_dat = tax_all
+tax_dat$taxonomy = NULL
+#Make all elements of the phyloseq object
+tax_dat = otu_table(tax_dat, taxa_are_rows = T)
+tax_levels = tax_table(tax_levels)
+#Match the row.names of the metadata to the sample names
+row.names(metadata_all) = metadata_all$Run
+
+#aggragate counts by taxonomy/Clean names
+tax_all$taxonomy = gsub("; s__.*", "", tax_all$taxonomy)
+tax_all = tax_all %>% group_by(taxonomy) %>% summarise_all(list(sum))
+tax_levels = strsplit(as.character(tax_all$taxonomy), split = "; ", fixed = TRUE)
+tax_levels = data.frame(t(sapply(tax_levels, function(x) x)))
+row.names(tax_levels) = tax_all$taxonomy
+names(tax_levels) = c("Domain", "Phylum", "Class", "Order", "Family", "Genus")
+tax_levels = data.frame(tax_levels)
+tax_levels = subset(tax_levels, Domain != "k__" &  Domain != "k__Eukaryota")
+tax_levels$Domain = droplevels(as.factor(tax_levels$Domain))
+tax_levels$Phylum = ifelse(tax_levels$Phylum == "p__", "p__Unclassified", as.character(tax_levels$Phylum))
+tax_levels$cleaned_names = ifelse(tax_levels$Genus == "g__", as.character(tax_levels$Family), as.character(tax_levels$Genus))
+tax_levels$cleaned_names = ifelse(tax_levels$cleaned_names == "f__", as.character(tax_levels$Order), as.character(tax_levels$cleaned_names))
+tax_levels$cleaned_names = ifelse(tax_levels$cleaned_names == "o__", as.character(tax_levels$Class), as.character(tax_levels$cleaned_names))
+tax_levels$cleaned_names = ifelse(tax_levels$cleaned_names == "c__", as.character(tax_levels$Phylum), as.character(tax_levels$cleaned_names))
+
+tax_all = tax_all[tax_all$taxonomy %in% row.names(tax_levels), ]
+tax_all = data.frame(tax_all)
+tax_all$cleaned_names = tax_levels[match(tax_all$taxonomy, row.names(tax_levels)), "cleaned_names"]
+
+tax_all$taxonomy = NULL
+tax_gen = tax_all %>% group_by(cleaned_names) %>% summarise_all(list(sum))
+tax_gen = as.data.frame(tax_gen, check.names = F)
+row.names(tax_gen) = tax_gen$cleaned_names
+tax_gen$cleaned_names = NULL
+tax_gen = as.data.frame(t(tax_gen), check.names = F)
+
+#Filter the absolute tax_gen file based on realtive abundance
+tax_gen_relative = tax_gen/rowSums(tax_gen)
+rowSums(tax_gen_relative)
+row.names(tax_gen_relative)=gsub("X","", row.names(tax_gen_relative))
+
+#filter the bugs
+dim(tax_gen)
+tax_gen = as.data.frame(t(tax_gen), check.names = F)
+dim( tax_gen[ apply(tax_gen, 1, function(x) sum( x > 0.0001) > 0.1 * ncol(tax_gen) ), ])
+tax_filt = tax_gen[ apply(tax_gen, 1, function(x) sum( x > 0.0001) > 0.1 * ncol(tax_gen) ), ]
+#Let's transpose it for easier use downstream
+tax_filt = as.data.frame(t(tax_filt), check.names = F)
+row.names(tax_filt) = gsub("X", "", row.names(tax_filt))
+tax_gen_filter=tax_gen_relative[, colnames(tax_gen_relative) %in% colnames(tax_filt)]
+tax_gen_filter = tax_gen_filter[order(colMeans(tax_gen_filter), decreasing = T)]
+metadata_all$col_library = paste(metadata_all$Collection, metadata_all$library, sep = "_")
+```
+
+\newpage
+##Beta Diversity
+Species abundances are passed through a basic filter requiring each species to have at least 0.01 % abundance in at least 10 % of all samples.
+A total of `r nrow(otu)` amplicon sequence variants were identified. After basic filtering and aggragation of the data `r ncol(tax_filt)` genera remained.
+
+###Bray-curtis dissimilarity
+####Principal coordinates analysis colored by covariates
+
+Principal coordinate analysis colored by Question
+```{r pcoa_bray_source_tax, echo = FALSE, warning = FALSE, message = FALSE}
+# calculate bray curtis dissimilarity explore in 4x3
+outliner = c("D56", "D57","D58","D59","D60","D61","D62", "D63")
+metadata_pc = subset(metadata_all, !metadata_all$match %in% outliner)
+tax_filt = tax_filt[row.names(tax_filt) %in% metadata_pc$Run,]
+tax_filt = subset(tax_filt, !row.names(tax_filt) =="SRR5574392")
+bray = vegdist(tax_filt, "bray")
+#Do the corrdinate analysis
+
+pc = capscale(bray~1, comm = tax_filt)
+cap = data.frame(pc$CA$u)
+cap = merge(metadata_all, cap, by.x = "Run", by.y = "row.names")
+rownames(cap) = cap[,1]
+cap = cap[,2:ncol(cap)]
+s = summary(pc)
+
+col = c("stool"="#f7b2b0", "Saliva" = "#f5d3b0","bathroom"="#d1cb94", "kitchen" = "#afde9e","Computer screen"="#abd690", "Computer mouse" = "#8abf91", "MBTA seat" = "#8abfb4", "MBTA wall" = "#8ab4bf", "MBTA grip"="#9fc5e3", "MBTA touchscreen"="#9695cc", "air" = "#ba95cc", "oil facility" = "#613782", "Soil"="#212121")
+
+p = ggplot(cap, aes(MDS1, MDS2,  group = match))+ geom_line() + geom_point(aes(color = Collection, shape = library), size = 4, alpha = 0.6)  + theme_bw(base_size = 8)   + scale_color_manual(values = col) +
+  labs(color = "Study", shape = "Library", title="", size = 8,
+       x = paste("PC 1 (", round(s$cont$importance[2,1]*100, digits =2), "%)", sep = ''),
+        y = paste("PC 2 (", round(s$cont$importance[2,2]*100, digits =2), "%)", sep = ''))
+p #Figure 4a
+
+##Re-ordinate each cluster
+# calculate bray curtis dissimilarity, export in 5x4
+#Figure 4a_BE
+metadata_BE = subset(metadata_all, !metadata_all$Collection == "oil facility" )
+metadata_BE = subset(metadata_BE, !metadata_BE$Collection == "stool" )
+tax_filt_BE = tax_filt[row.names(tax_filt) %in% metadata_BE$Run,]
+bray = vegdist(tax_filt_BE, "bray")
+pc = capscale(bray~1, comm = tax_filt_BE)
+cap = data.frame(pc$CA$u)
+cap = merge(metadata_BE, cap, by.x = "Run", by.y = "row.names")
+rownames(cap) = cap[,1]
+cap = cap[,2:ncol(cap)]
+s = summary(pc)
+
+ggplot(cap, aes(MDS1, MDS2,  group = match))+ geom_line() + geom_point(aes(color = Collection, shape = library), size = 4, alpha = 0.6)  + theme_bw(base_size = 8)   + scale_color_manual(values = col) +
+  labs(color = "Study", shape = "Library", title="", size = 8,
+       x = paste("PC 1 (", round(s$cont$importance[2,1]*100, digits =2), "%)", sep = ''),
+        y = paste("PC 2 (", round(s$cont$importance[2,2]*100, digits =2), "%)", sep = ''))
+
+#Figure 4a_Stool
+metadata_stool = subset(metadata_all, metadata_all$Collection == "stool" )
+outliner = c("D56", "D57","D58","D59","D60","D61","D62", "D63")
+metadata_stool = subset(metadata_stool, !metadata_stool$match %in% outliner)
+tax_filt_stool = tax_filt[row.names(tax_filt) %in% metadata_stool$Run,]
+bray = vegdist(tax_filt_stool, "bray")
+pc = capscale(bray~1, comm = tax_filt_stool)
+cap = data.frame(pc$CA$u)
+cap = merge(metadata_stool, cap, by.x = "Run", by.y = "row.names")
+rownames(cap) = cap[,1]
+cap = cap[,2:ncol(cap)]
+s = summary(pc)
+ggplot(cap, aes(MDS1, MDS2,  group = match))+ geom_line(size = 0.5) + geom_point(aes(color = Collection, shape = library), size = 4, alpha = 0.6)  + theme_bw(base_size = 8)   + scale_color_manual(values = col) +
+  labs(color = "Study", shape = "Library", title="", size = 8,
+       x = paste("PC 1 (", round(s$cont$importance[2,1]*100, digits =2), "%)", sep = ''),
+        y = paste("PC 2 (", round(s$cont$importance[2,2]*100, digits =2), "%)", sep = ''))
+
+#Figure4a_Oil
+metadata_oil = subset(metadata_all, metadata_all$Collection == "oil facility" )
+tax_filt_oil = tax_filt[row.names(tax_filt) %in% metadata_oil$Run,]
+bray = vegdist(tax_filt_oil, "bray")
+pc = capscale(bray~1, comm = tax_filt_oil)
+cap = data.frame(pc$CA$u)
+cap = merge(metadata_oil, cap, by.x = "Run", by.y = "row.names")
+rownames(cap) = cap[,1]
+cap = cap[,2:ncol(cap)]
+s = summary(pc)
+ggplot(cap, aes(MDS1, MDS2,  group = match))+ geom_line(size = 0.5) + geom_point(aes(color = Collection, shape = library), size = 4, alpha = 0.6)  + theme_bw(base_size = 8)   + scale_color_manual(values = col) +
+  labs(color = "Study", shape = "Library", title="", size = 8,
+       x = paste("PC 1 (", round(s$cont$importance[2,1]*100, digits =2), "%)", sep = ''),
+        y = paste("PC 2 (", round(s$cont$importance[2,2]*100, digits =2), "%)", sep = ''))
+
+#dev.off()
+```
+
+\newpage
+```{r adonis_univariate_tax_bray, echo = FALSE, warning = FALSE, message = FALSE}
+row.names(metadata_all)=metadata_all$Run
+metadata_all=subset(metadata_all, !row.names(metadata_all)=="SRR5574392")
+metadata_all=metadata_all[order(match(row.names(metadata_all), row.names(tax_filt))),]
+adonis_res_pval = vector()
+adonis_res_rsq = vector()
+
+for (col in names(metadata_all[, c(4:6)])){
+  adonis.univ = adonis(as.formula(paste("tax_filt~", col)), data = metadata_all[, c(4:6)], permutations = 999, method = 'bray')
+  adonis_res_pval[col] = adonis.univ$aov.tab[1,]$`Pr(>F)`
+  adonis_res_rsq[col] = adonis.univ$aov.tab[1,]$R2
+}
+
+univar_res_tax = rbind(adonis_res_pval, adonis_res_rsq)
+univar_res_tax = as.data.frame(t(univar_res_tax))
+names(univar_res_tax) = c("P-Value", "R2")
+univar_res_tax$`P-Value` = as.numeric(univar_res_tax$`P-Value`)
+univar_res_tax$R2 = as.numeric(univar_res_tax$R2)
+univar_res_tax$p_adj = p.adjust(univar_res_tax$`P-Value`, "fdr")
+
+univar_res_tax ##Supple_3_AdonisTests
+
+#between collection and library
+set.seed(100)
+adonis.univ = adonis(tax_filt~Collection*library, data = metadata_all, permutations = 999, distance = 'bray')
+#adonis.univ = adonis(biomass_gen_filt~Collection:PMA.treatment, data = meta_dat_biomass, permutations = 999, distance = 'bray')
+adonis.univ$aov.tab$p_adj = p.adjust(adonis.univ$aov.tab$`Pr(>F)`, "fdr")
+adonis.univ$aov.tab
+
+#Check collection independently
+adonis_result_otu <- adonis(biomass_gen_filt~Collection, meta_dat_biomass, permutations = 999, distance = 'bray')
+adonis_result_otu 
+
+#Check pairwise
+bray_mat = as.matrix(bray_biomass)
+meta_dat_biomass= meta_dat_biomass[order(match(row.names(meta_dat_biomass), row.names(bray_mat))),]
+
+path_pair_dia = pairwise.adonis(bray_mat, factors = meta_dat_biomass$Collection, p.adjust.m = "BH")
+path_pair_dia
+
+path_pair_dia = pairwise.adonis(bray_mat, factors = meta_dat_biomass$PMA.treatment, p.adjust.m = "BH")
+
+path_pair_dia
+```
+
+#### Visualized as stacked barplots
+
+```{r composition_tax, include=FALSE}
+#Creating bar plots for visualizations
+tax_gen_filter$collection = NULL
+tax_gen_filter = tax_gen_filter[!row.names(tax_gen_filter) == "SRR5574392",] #remove the problematic sample
+who = names(sort(colMeans(tax_gen_filter), decreasing = TRUE))[1:15]
+f = tax_gen_filter[,names(tax_gen_filter) %in% who]
+#Sort f by most abundant taxa
+f = f[order(colMeans(f), decreasing = T)]
+# adding in other taxa as a column for display
+f$Other = 1-rowSums(f)
+who = c(who, "Other")
+#transpose f to add in the sample names for the melt
+f = data.frame(t(f))
+head(f)
+# add Taxon column prior to melting
+f$Taxa <- row.names(f)
+# melt
+m = melt(f)
+# add the groups into the analysis
+m$collection = metadata_all[ match(m$variable,metadata_all$Run), "Collection" ]
+m$library = metadata_all[ match(m$variable, metadata_all$Run ), "library" ]
+m$sample.name = metadata_all[ match(m$variable, metadata_all$Run ), "Sample.Name" ]
+col = scale_fill_manual(values = c("g__Bacteroides"="#80B1D3",  "f__Ruminococcaceae"="#FCCDE5", "o__Clostridiales"="#CCEBC5", "g__Faecalibacterium"="#BC80BD","f__Lachnospiraceae"="#E7298A", "g__Prevotella"="#B3DE69","g__Roseburia"="#8e4ae0","g__Pseudomonas"="#FB8072", "f__Clostridiaceae"="#BEBADA", "g__Staphylococcus"="#FFFFB3", "o__RF32"="#8DD3C7", "g__Parabacteroides"="#00008B", "g__Lactobacillus"="#E7298A", "g__Corynebacterium"="#F46D43", "g__Enhydrobacter"="#edcf6d", "Other"="#CCCCCC"))
+
+m$collection=gsub("Computer screen", "Screen", m$collection)
+m$collection=gsub("Computer mouse", "Mouse", m$collection)
+m$collection = ordered(m$collection, c("bathroom","kitchen","Screen", "Mouse","MBTA seat", "MBTA wall","MBTA grip","MBTA touchscreen","air","Saliva", "stool","Soil","oil facility"))
+
+##Plot BE_air, oil and stool separately
+#Stool
+tax_gen_filter$collection = metadata_all[ match(row.names(tax_gen_filter),metadata_all$Run), "Collection" ]
+stool_gen_filter = subset(tax_gen_filter, tax_gen_filter$collection == "stool")
+stool_gen_filter$collection=NULL
+who = names(sort(colMeans(stool_gen_filter), decreasing = TRUE))[1:25]
+f = stool_gen_filter[,names(stool_gen_filter) %in% who]
+f = f[order(colMeans(f), decreasing = T)]
+f$Other = 1-rowSums(f)
+f = f[order(f[1], decreasing = T ), ] ##This is the one
+who = c(who, "Other")
+f = data.frame(t(f))
+head(f)
+f$Taxa <- row.names(f)
+m = melt(f)
+m$collection = metadata_all[ match(m$variable,metadata_all$Run), "Collection" ]
+m$library = metadata_all[ match(m$variable, metadata_all$Run ), "library" ]
+m$sample.name = metadata_all[ match(m$variable, metadata_all$Run ), "Sample.Name" ]
+m$sort = metadata_all[ match(m$variable, metadata_all$Run ), "match" ]
+m$sort = gsub("D", "", m$sort)
+m$sort=as.numeric(m$sort)
+m$sort=ordered(m$sort)
+m$label=paste(m$sort, m$library, sep = "_")
+m$label=ordered(m$label)
+
+##Supplementary figure: Relative abundance of the most abundant taxa in different samples across different sample types
+p = ggplot(m, aes(variable, fill = Taxa)) + geom_bar(aes(weight = value), position = position_fill(reverse = TRUE)) + scale_fill_manual(values = col) + theme_bw(base_size = 8) + facet_grid(~collection+library, scales = "free", space ="free")  + xlab("Stool") + ylab("Relative Abundance") + theme(legend.text = element_text(face = "italic")) + guides(fill = guide_legend(ncol = 1, reverse=TRUE, keyheight = 0.55)) + scale_y_continuous(labels = percent_format()) + labs(title="") + theme(plot.title = element_text(size = 20))+ theme(axis.title.x=element_blank(), axis.text.x=element_blank(), axis.ticks.x=element_blank())
+p$data$Taxa = factor(p$data$Taxa, ordered = TRUE, levels = who)
+
+p = p + theme(axis.text.x = element_text(angle = 90, hjust=1, vjust=0.5, size = 4))+ theme(panel.spacing = unit(0.01, "lines"))
+
+```
+
+```{r bar_oil_abundance, echo = FALSE, warning = FALSE, message = FALSE, fig.width=8, fig.height=3}
+tax_gen_filter$collection = metadata_all[ match(row.names(tax_gen_filter),metadata_all$Run), "Collection" ]
+oil_gen_filter = subset(tax_gen_filter, tax_gen_filter$collection == "oil facility")
+oil_gen_filter$collection=NULL
+who = names(sort(colMeans(oil_gen_filter), decreasing = TRUE))[1:25]
+f = oil_gen_filter[,names(oil_gen_filter) %in% who]
+f = f[order(colMeans(f), decreasing = T)]
+f$Other = 1-rowSums(f)
+f = f[order(f[1], decreasing = T ), ] ##This is the one
+who = c(who, "Other")
+f = data.frame(t(f))
+f$Taxa <- row.names(f)
+m = melt(f)
+m$collection = metadata_all[ match(m$variable,metadata_all$Run), "Collection" ]
+m$library = metadata_all[ match(m$variable, metadata_all$Run ), "library" ]
+m$sample.name = metadata_all[ match(m$variable, metadata_all$Run ), "Sample.Name" ]
+
+#col = scale_fill_manual(values = c("g__Bacteroides"="#80B1D3",  "f__Ruminococcaceae"="#FCCDE5", "o__Clostridiales"="#CCEBC5", "g__Faecalibacterium"="#BC80BD","f__Lachnospiraceae"="#E7298A", "g__Prevotella"="#B3DE69","g__Roseburia"="#8e4ae0","g__Pseudomonas"="#FB8072", "f__Clostridiaceae"="#BEBADA", "g__Staphylococcus"="#FFFFB3", "o__RF32"="#8DD3C7", "g__Parabacteroides"="#00008B","g__Lactobacillus"="#E7298A", "g__Corynebacterium"="#F46D43", "g__Enhydrobacter"="#edcf6d","Other"="#CCCCCC","g__Blautia"="#eb4034","g__Ruminococcus"="#56756d","g__Coprococcus"="#ded66a","f__[Barnesiellaceae]"="#0e2945","g__Leptospira"="#450e3b","g__Sutterella"="#705d6d","g__Methanosaeta"="#adab8c","f__Desulfomicrobiaceae"="#8f8c63","g__Desulfovibrio"="#f7ed59","f__Bradyrhizobiaceae"="#e0b38d","g__Vibrio"="#b8987d","g__Stenotrophomonas"="#963112","g__Corynebacterium"="#d0eb94","g__Methanobacterium"="#96c78b","g__Ralstonia"="#abeaeb","g__Rothia"="#649c83", "f__Rhodospirillaceae"="#9c6b64","f__Peptococcaceae"="#d4a59f", "o__Clostridiales"="#e6bdb8","g__Variovorax"="#b53828"))         
+
+library(RColorBrewer)
+n = 26
+qual_col_pals = brewer.pal.info[brewer.pal.info$category == 'seq',]
+col_vector = unlist(mapply(brewer.pal, qual_col_pals$maxcolors, rownames(qual_col_pals)))
+col=sample(col_vector, n)
+
+##Supplementary figure: Relative abundance of the most abundant taxa in different samples across different sample types
+p = ggplot(m, aes(variable, fill = Taxa)) + geom_bar(aes(weight = value), position = position_fill(reverse = TRUE)) + scale_fill_manual(values = col) + theme_bw(base_size = 8) + facet_grid(~collection +library, scales = "free", space ="free")  +xlab("Oil facility") + ylab("Relative Abundance") + theme(legend.text = element_text(face = "italic")) + guides(fill = guide_legend(ncol = 1, reverse=TRUE, keyheight = 0.55)) + scale_y_continuous(labels = percent_format()) + labs(title="") + theme(plot.title = element_text(size = 20))
+p$data$Taxa = factor(p$data$Taxa, ordered = TRUE, levels = who)
+p+ theme(axis.title.x=element_blank(), axis.text.x=element_blank(), axis.ticks.x=element_blank())
+
+p = p + theme(axis.text.x = element_text(angle = 90, hjust=1, vjust=0.5, size = 4)) + theme(panel.spacing = unit(0.01, "lines"))
+
+```
+
+```{r bar_BE_abundance, echo = FALSE, warning = FALSE, message = FALSE, fig.width=8, fig.height=3}
+tax_gen_filter$collection = metadata_all[ match(row.names(tax_gen_filter),metadata_all$Run), "Collection" ]
+BE_gen_filter = subset(tax_gen_filter, !tax_gen_filter$collection == "oil facility")
+BE_gen_filter = subset(BE_gen_filter, !BE_gen_filter$collection == "stool")
+BE_gen_filter$collection=NULL
+who = names(sort(colMeans(BE_gen_filter), decreasing = TRUE))[1:25]
+f = BE_gen_filter[,names(BE_gen_filter) %in% who]
+f$Other = 1-rowSums(f)
+who = c(who, "Other")
+f = f[order(f[1], decreasing = T ), ] 
+
+f = data.frame(t(f))
+f$Taxa <- row.names(f)
+m = melt(f)
+m$collection = metadata_all[ match(m$variable,metadata_all$Run), "Collection" ]
+m$library = metadata_all[ match(m$variable, metadata_all$Run ), "library" ]
+m$sample.name = metadata_all[ match(m$variable, metadata_all$Run ), "Sample.Name" ]
+m$collection=gsub("Computer screen", "Screen", m$collection)
+m$collection=gsub("Computer mouse", "Mouse", m$collection)
+m$collection=gsub("MBTA ", "", m$collection)
+
+m$collection = ordered(m$collection, c("air","bathroom","kitchen","Screen", "Mouse","seat", "wall","grip","touchscreen","Saliva", "Soil"))
+#col = scale_fill_manual(values = c("g__Bacteroides"="#80B1D3",  "f__Ruminococcaceae"="#FCCDE5", "o__Clostridiales"="#CCEBC5", "g__Faecalibacterium"="#BC80BD","f__Lachnospiraceae"="#E7298A", "g__Prevotella"="#B3DE69","g__Roseburia"="#8e4ae0","g__Pseudomonas"="#FB8072", "f__Clostridiaceae"="#BEBADA", "g__Staphylococcus"="#FFFFB3", "o__RF32"="#8DD3C7", "g__Parabacteroides"="#00008B","g__Lactobacillus"="#E7298A", "g__Corynebacterium"="#F46D43", "g__Enhydrobacter"="#edcf6d","Other"="#CCCCCC","g__Blautia"="#eb4034","g__Ruminococcus"="#56756d","g__Coprococcus"="#ded66a","f__[Barnesiellaceae]"="#0e2945","g__Leptospira"="#450e3b","g__Sutterella"="#705d6d","g__Methanosaeta"="#adab8c","f__Desulfomicrobiaceae"="#8f8c63","g__Desulfovibrio"="#f7ed59","f__Bradyrhizobiaceae"="#e0b38d","g__Vibrio"="#b8987d","g__Stenotrophomonas"="#963112","g__Methanobacterium"="#96c78b","g__Ralstonia"="#abeaeb","g__Rothia"="#649c83", "f__Rhodospirillaceae"="#9c6b64","f__Peptococcaceae"="#d4a59f","g__Variovorax"="#b53828","g__Sphingomonas"="#8cb2f5","o__Streptophyta"="#6f90c9","f__Enterobacteriaceae"="#7062b5","g__Streptococcus"="#493d85","f__Halomonadaceae"="#603566","g__Acinetobacter"="#937896","f__Xanthomonadaceae"="#8a8199","f__Caulobacteraceae"="#b582a7", "g__Paracoccus"="#cfbb99", "g__Micrococcus"="#87756f"   ))
+library(RColorBrewer)
+n = 26
+qual_col_pals = brewer.pal.info[brewer.pal.info$category == 'div',]
+col_vector = unlist(mapply(brewer.pal, qual_col_pals$maxcolors, rownames(qual_col_pals)))
+col=sample(col_vector, n)
+
+##Supplementary figure: Relative abundance of the most abundant taxa in different samples across different sample types
+p = ggplot(m, aes(variable, fill = Taxa)) + geom_bar(aes(weight = value), position = position_fill(reverse = TRUE)) + theme_bw(base_size = 8) + facet_grid(~collection + library, scales = "free", space ="free") + scale_fill_manual(values = col) + xlab("BE Environment")+ ylab("Relative Abundance") + theme(legend.text = element_text(face = "italic")) + guides(fill = guide_legend(ncol = 1, reverse=TRUE, keyheight = 0.55)) + scale_y_continuous(labels = percent_format()) + labs(title="") + theme(plot.title = element_text(size = 20))
+p$data$Taxa = factor(p$data$Taxa, ordered = TRUE, levels = who)
+p = p+ theme(axis.title.x=element_blank(), axis.text.x=element_blank(), axis.ticks.x=element_blank())
+p
+
+p = p + theme(axis.text.x = element_text(angle = 90, hjust=1, vjust=0.5, size = 4))
+
+# remove column names
+#p = p + theme(axis.title.x=element_blank(),axis.text.x=element_blank(),axis.ticks.x=element_blank())
+
+p = p + theme(panel.spacing = unit(0.01, "lines"))
+library(grid)
+gt = ggplot_gtable(ggplot_build(p))
+gt$widths[8] = 60*gt$widths[8]
+gt$widths[12] = 60*gt$widths[12]
+gt$widths[16] = 60*gt$widths[16]
+gt$widths[20] = 60*gt$widths[20]
+gt$widths[24] = 60*gt$widths[24]
+gt$widths[28] = 60*gt$widths[28]
+gt$widths[32] = 60*gt$widths[32]
+gt$widths[36] = 60*gt$widths[36]
+gt$widths[40] = 60*gt$widths[40]
+gt$widths[44] = 60*gt$widths[44]
+grid.draw(gt)
+
+```
+
+
+```{r boxplot_bray_distance, echo = FALSE, warning = FALSE, message = FALSE}
+tax_filt = tax_filt[row.names(tax_filt) %in% row.names(tax_gen_filter), ]
+bray = vegdist(tax_filt, "bray")
+
+bray_df = as.matrix(bray)
+bray_df = melt(bray_df)
+bray_df = bray_df[bray_df$Var1 != bray_df$Var2, ]
+bray_df = cbind(metadata_all[ match(bray_df$Var1, metadata_all$Run), "Collection"], bray_df)
+bray_df = cbind(metadata_all[ match(bray_df$Var1, metadata_all$Run), "match"], bray_df)
+bray_df = cbind(metadata_all[ match(bray_df$Var2, metadata_all$Run), "match"], bray_df)
+bray_df = cbind(metadata_all[ match(bray_df$Var1, metadata_all$Run), "library"], bray_df)
+names(bray_df) = c("Library", "match_var2", "match_var1", "collection", "var1", "var2", "bray")
+
+bray_df_sub = bray_df[bray_df$match_var1 == bray_df$match_var2, ]
+bray_df_sub = subset(bray_df_sub, Library == "DNA")
+
+bray_df_sub <- na.omit(bray_df_sub)
+bray_df_sub$collection = ordered(bray_df_sub$collection, c("stool", "Saliva", "bathroom", "kitchen", "Computer screen", "Computer mouse", "MBTA seat", "MBTA wall", "MBTA grip", "MBTA touchscreen", "air", "oil facility", "Soil"))
+#names(col_sample) = levels(as.factor(bray_df_sub$collection))
+#png("change_in_bray_biomass_spike.png", height = 3, width = 6, units = "in", res = 600)
+```
+
+```{r boxplot_bray_distance paired samples, echo = FALSE, warning = FALSE, message = FALSE}
+bray_df$col_library = paste(bray_df$collection, bray_df$Library, sep = "_")
+bray_df = cbind(metadata_all[ match(bray_df$var1, metadata_all$Run), "col_library"], bray_df)
+bray_df = cbind(metadata_all[ match(bray_df$var2, metadata_all$Run), "col_library"], bray_df)
+names(bray_df) = c("col_var2","col_var1", "Library", "match_var2", "match_var1", "collection", "var1", "var2", "bray", "col_library")
+
+bray_df_sub1 = bray_df[bray_df$col_var2 == bray_df$col_var1, ]
+bray_df_sub1$col_library=paste(bray_df_sub1$collection, bray_df_sub1$Library, sep = "_")
+
+#col_sample = c("Screen" ="#782856", "Mouse" = "#a38fa6", "Soil" = "#6ca895", "Saliva" = "#a5d9b9" )
+
+bray_df_sub1$col_library = ordered(bray_df_sub1$col_library, c("stool_DNA", "stool_RNA","Saliva_DNA", "Saliva_RNA", "bathroom_DNA", "bathroom_RNA","kitchen_DNA", "kitchen_RNA","Screen_DNA", "Screen_RNA","Mouse_DNA", "Mouse_RNA","MBTA seat_DNA","MBTA seat_RNA","MBTA wall_DNA","MBTA wall_RNA", "MBTA grip_DNA", "MBTA grip_RNA","MBTA touchscreen_DNA", "MBTA touchscreen_RNA","air_DNA","air_RNA", "Oil_DNA","Oil_RNA","Soil_DNA", "Soil_RNA" ))
+#names(col_sample) = levels(as.factor(bray_df_sub1$collection))
+
+col = c("stool"="#f7b2b0", "Saliva" = "#f5d3b0","bathroom"="#d1cb94", "kitchen" = "#afde9e","Computer screen"="#abd690", "Computer mouse" = "#8abf91", "MBTA seat" = "#8abfb4", "MBTA wall" = "#8ab4bf", "MBTA grip"="#9fc5e3", "MBTA touchscreen"="#9695cc", "air" = "#ba95cc", "oil facility" = "#613782", "Soil"="#212121")
+
+ggplot(bray_df_sub1, aes(x = col_library, y = bray, fill = collection)) + geom_boxplot() + scale_fill_manual(values = col)+theme_bw(base_size = 8) + xlab("Average distance within sample types") + ylab("Bray-Curtis Distance")  + labs(fill = "Sample type") + theme(axis.text.x = element_text(angle = 90, hjust=1, vjust=0.5)) 
+
+
+#Three paired boxplots
+bray_df_sub2 = bray_df[bray_df$match_var1 == bray_df$match_var2, ]
+bray_df_sub2 = subset(bray_df_sub2, Library == "DNA")
+bray_df_sub2$col_library= paste(bray_df_sub2$collection, "between", sep = "_")
+
+#names(col_sample) = levels(as.factor(bray_df_sub2$collection))
+bray_df_sub2$col_library = gsub("_between", "", bray_df_sub2$col_library)
+bray_df_sub2$col_library = ordered(bray_df_sub2$col_library, c("stool","Saliva", "bathroom","kitchen","Computer screen", "Computer mouse","MBTA seat", "MBTA wall","MBTA grip","MBTA touchscreen","air", "oil facility","Soil"))
+
+p = ggplot(bray_df_sub2, aes(x = col_library, y = bray, fill = collection)) + geom_boxplot() +scale_fill_manual(values = col) + theme_bw(base_size = 8) + xlab("Average distance within sample types") + ylab("Bray-Curtis Distance")  + labs(fill = "Sample type") + theme(axis.text.x = element_text(angle = 90, hjust=1, vjust=0.5))
+p #Figure 4b
+
+#dev.off()
+```
+
+
+
+```{r plot heatmap, include = TRUE}
+##heatmap
+m = as.data.frame(t(tax_gen_relative))
+RN = as.data.frame(row.names(m))
+m <- as.data.frame(sapply(m, as.numeric))
+row.names(m) = RN$`row.names(m)`
+m$taxa = row.names(m)
+m = melt(m, id.vars = "taxa")
+m$library = metadata_all[ match(m$variable, metadata_all$Run ), "library" ] ##all samples are included here
+m = na.omit(m)
+m = m %>% pivot_wider(names_from = `library`,
+                      values_from = value,
+                      values_fill = list(value = 0))
+m$match = metadata_all[match(m$variable, metadata_all$Run), "match"]
+m$taxa_match = paste(m$match, m$taxa, sep = "_")
+m_1 = m[,c(3,4,6)]
+m_1 = m_1 %>% group_by(taxa_match) %>% summarise_all(list(sum))
+m_1$taxa = m[match(m_1$taxa_match, m$taxa_match), "taxa"]
+m_1$taxa = m_1$taxa$taxa
+m_1$sample = m[match(m_1$taxa_match, m$taxa_match), "match"]
+m_1$sample = m_1$sample$match
+m_1$collection = metadata_all[match(m_1$sample, metadata_all$match), "Collection"]
+m_1$ratio = m_1$RNA/m_1$DNA
+m_1 = na.omit(m_1)
+m_1$class = tax_levels[match(m_1$taxa, tax_levels$cleaned_names), "Class"]
+m_1$family = tax_levels[match(m_1$taxa, tax_levels$cleaned_names), "Family"]
+m_1$genus = tax_levels[match(m_1$taxa, tax_levels$cleaned_names), "Genus"]
+m_2 = m_1[m_1$class == "c__",]
+m_3 = subset(m_1, !m_1$taxa_match %in% m_2$taxa_match)
+m_2$class = m_2$taxa
+m_1 = rbind(m_2, m_3)
+m_1$class = gsub("c__", "", m_1$class)
+m_1$family = gsub("f__", "", m_1$family)
+m_1$Diff = m_1$RNA-m_1$DNA
+
+m_1$log_ratio = log10(m_1$ratio)
+
+##Plot Diff heatmap
+library(pheatmap)
+library(RColorBrewer)
+m_heatmap = m_1
+m_heatmap = subset(m_heatmap, !m_heatmap$genus == "g__")
+m_heatmap$Diff = m_heatmap$RNA - m_heatmap$DNA
+heatmap = m_heatmap[,c(4:5, 11)]
+heatmap= heatmap %>% pivot_wider(names_from = `taxa`,
+                      values_from = Diff,
+                      values_fill = list(value = 0))
+#heatmap[is.na(heatmap)] = 0
+heatmap$collection = metadata_all[match(heatmap$sample, metadata_all$match), "Collection"]
+x = c("stool", "Saliva", "bathroom", "kitchen", "Computer screen", "Computer mouse", "MBTA seat", "MBTA wall", "MBTA grip", "MBTA touchscreen", "air", "oil facility", "Soil")
+heatmap = heatmap %>% mutate(collection =  factor(collection, levels = x)) %>% arrange(collection)  
+row.names(heatmap) = heatmap$sample
+
+mydf <- heatmap[,c("sample", "collection")]
+row.names(mydf) =mydf$sample 
+mydf = as.data.frame(mydf)
+mydf$sample = NULL
+
+heatmap = as.data.frame(heatmap)
+heatmap$sample = NULL
+heatmap$collection = NULL
+
+columns = data.frame(names(heatmap))
+columns$family = tax_levels[match(columns$names.heatmap., tax_levels$Genus), "Family"]
+columns$class = tax_levels[match(columns$names.heatmap., tax_levels$Genus), "Class"]
+columns$phylum = tax_levels[match(columns$names.heatmap., tax_levels$Genus), "Phylum"]
+row.names(columns) = columns$names.heatmap.
+# add row annotations
+col = list(ID = c("stool"="#f7b2b0", "Saliva" = "#f5d3b0","bathroom"="#d1cb94", "kitchen" = "#afde9e","Computer screen"="#abd690", "Computer mouse" = "#8abf91", "MBTA seat" = "#8abfb4", "MBTA wall" = "#8ab4bf", "MBTA grip"="#9fc5e3", "MBTA touchscreen"="#9695cc", "air" = "#ba95cc", "oil facility" = "#613782", "Soil"="#212121"))
+phylum = columns[,c(1,4)]
+row.names(phylum) = phylum$names.heatmap.
+phylum = as.data.frame(phylum)
+phylum$names.heatmap. = NULL
+phylum$phylum = ordered(phylum$phylum)
+
+##plot ratio (remove 0 and inf)
+m_heatmap = m_1
+m_heatmap = subset(m_heatmap, !m_heatmap$genus == "g__")
+m_heatmap = subset(m_heatmap, !m_heatmap$ratio == 0)
+m_heatmap = subset(m_heatmap, !m_heatmap$ratio == "Inf")
+m_heatmap$log_ratio = log10(m_heatmap$ratio)
+heatmap = m_heatmap[,c(4:5, 12)]
+heatmap= heatmap %>% pivot_wider(names_from = `taxa`,
+                      values_from = log_ratio,
+                      values_fill = list(value = 0))
+heatmap$collection = metadata_all[match(heatmap$sample, metadata_all$match), "Collection"]
+heatmap = heatmap %>% mutate(collection =  factor(collection, levels = x)) %>% arrange(collection)  
+row.names(heatmap) = heatmap$sample
+
+mydf <- heatmap[,c("sample", "collection")]
+row.names(mydf) = mydf$sample 
+mydf = as.data.frame(mydf)
+mydf$sample = NULL
+
+heatmap = as.data.frame(heatmap)
+heatmap$sample = NULL
+heatmap$collection = NULL
+
+columns = data.frame(names(heatmap))
+columns$family = tax_levels[match(columns$names.heatmap., tax_levels$Genus), "Family"]
+columns$class = tax_levels[match(columns$names.heatmap., tax_levels$Genus), "Class"]
+columns$phylum = tax_levels[match(columns$names.heatmap., tax_levels$Genus), "Phylum"]
+row.names(columns) = columns$names.heatmap.
+# add row annotations
+pheatmap(heatmap, cluster_cols = F, cluster_rows = F, annotation_row = mydf, annotation_colors = col[1])
+
+m_Porphyromonadaceae= m_1[m_1$family == "Porphyromonadaceae",]
+m_Lachnospiraceae= m_1[m_1$family == "Lachnospiraceae",]
+m_Enterobacteriaceae= m_1[m_1$family == "Enterobacteriaceae",]
+m_Propionibacteriaceae= m_1[m_1$family == "Propionibacteriaceae",]
+m_Clostridiaceae= m_1[m_1$family == "Clostridiaceae",]
+m_Comamonadaceae= m_1[m_1$family == "Comamonadaceae",]
+m_Tissierellaceae= m_1[m_1$family == "[Tissierellaceae]",]
+
+fwrite(heatmap, "heatmap.csv")
+fwrite(m_1, "m_1.csv")
+##Lachnospiraceae
+Lachnospiraceae_heatmap = heatmap[,names(heatmap) %in% m_Lachnospiraceae$genus]
+#Lachnospiraceae_heatmap = as.data.frame(t(Lachnospiraceae_heatmap))
+#mydf = as.data.frame(t(mydf))
+breakList = seq(-4, 4, by = 1)
+pheatmap(t(Lachnospiraceae_heatmap), breaks = seq(-4,4), color = c("blue", "white", "yellow", "red"),cluster_cols = F, cluster_rows = F, , annotation_col = mydf)
+
+Tissierellaceae_heatmap = heatmap[,names(heatmap) %in% m_Tissierellaceae$genus]
+pheatmap(t(Tissierellaceae_heatmap), breaks = seq(-4,4), cluster_cols = F, cluster_rows = F, annotation_col = mydf)
+
+Porphyromonadaceae_heatmap = heatmap[,names(heatmap) %in% m_Porphyromonadaceae$genus]
+pheatmap(t(Porphyromonadaceae_heatmap), breaks = seq(-4,4), cluster_cols = F, cluster_rows = F, annotation_col =mydf, annotation_colors = col[1])
+
+Enterobacteriaceae_heatmap = heatmap[,names(heatmap) %in% m_Enterobacteriaceae$genus]
+pheatmap(t(Enterobacteriaceae_heatmap), breaks = seq(-4,4), cluster_cols = F, cluster_rows = F, annotation_col = mydf, annotation_colors = col[1])
+
+Propionibacteriaceae_heatmap = heatmap[,names(heatmap) %in% m_Propionibacteriaceae$genus]
+pheatmap(t(Propionibacteriaceae_heatmap), breaks = seq(-4,4), cluster_cols = F, cluster_rows = F, annotation_col =mydf, annotation_colors = col[1])
+
+Clostridiaceae_heatmap = heatmap[,names(heatmap) %in% m_Clostridiaceae$genus]
+pheatmap(t(Clostridiaceae_heatmap), breaks = seq(-4,4), cluster_cols = F, cluster_rows = F, annotation_col = mydf, annotation_colors = col[1])
+
+Comamonadaceae_heatmap = heatmap[,names(heatmap) %in% m_Comamonadaceae$genus]
+pheatmap(t(Comamonadaceae_heatmap), breaks = seq(-4,4), cluster_cols = F, cluster_rows = F, annotation_col = mydf, annotation_colors = col[1])
+#export in 13x2.45
+```
+
+
+```{r MA plot, include=TRUE}
+###MA plot export in 4 x 3
+#m_Lachnospiraceae$log_mean = (log10(m_Lachnospiraceae$DNA) + log10(m_Lachnospiraceae$RNA))/2
+m_Lachnospiraceae$log_mean = log10((m_Lachnospiraceae$DNA + m_Lachnospiraceae$RNA)/2)
+m_Porphyromonadaceae$log_mean = log10((m_Porphyromonadaceae$DNA + m_Porphyromonadaceae$RNA)/2)
+m_Enterobacteriaceae$log_mean = log10((m_Enterobacteriaceae$DNA + m_Enterobacteriaceae$RNA)/2)
+m_Clostridiaceae$log_mean = log10((m_Clostridiaceae$DNA + m_Clostridiaceae$RNA)/2)
+m_Comamonadaceae$log_mean = log10((m_Comamonadaceae$DNA + m_Comamonadaceae$RNA)/2)
+m_Tissierellaceae$log_mean = log10((m_Tissierellaceae$DNA + m_Tissierellaceae$RNA)/2)
+m_Propionibacteriaceae$log_mean = log10((m_Propionibacteriaceae$DNA + m_Propionibacteriaceae$RNA)/2)
+
+col = c("stool" = "#f7b2b0", "Saliva" = "#f5d3b0", "bathroom" = "#d1cb94", "kitchen" = "#afde9e", "Computer screen" = "#abd690", "Computer mouse" = "#8abf91", "BTA seat" = "#8abfb4", "MBTA wall"= "#8ab4bf", "MBTA grip" = "#9fc5e3", "MBTA touchscreen" = "#9695cc", "air" = "#ba95cc", "oil facility" = "#613782", "Soil" = "#212121")
+
+ggplot(m_Lachnospiraceae, aes(x = log_mean, y = log_ratio, color = collection)) + geom_point(alpha = 0.6, size = 3) + scale_color_manual(values = col) + theme_classic() + geom_hline(yintercept=0,linetype="dashed") + ylab("Lachnospiraceae RNA:DNA ratio (log10)") + xlab("Average abundance (log10)") + theme(legend.title = element_text( size=7), legend.text=element_text(size=7), legend.position = "bottom") +  theme(legend.key.size = unit(0.5, "cm")) + theme_bw() + ylim(-3, 3) #+ geom_text(aes(label=ifelse(ratio>10,as.character(genus),'')),size = 3, hjust=0,vjust=1)+ geom_text(aes(label=ifelse(ratio<0.1,as.character(genus),'')),size = 3, hjust=0,vjust=1) + ylim(-3, 3)
+
+ggplot(m_Porphyromonadaceae, aes(x = log_mean, y = log_ratio, color = collection)) + geom_point(alpha = 0.6, size = 3) + scale_color_manual(values = col) + theme_classic() + geom_hline(yintercept=0,linetype="dashed") + ylab("Porphyromonadaceae RNA:DNA ratio (log10)") + xlab("Average abundance (log10)") + theme(legend.title = element_text( size=7), legend.text=element_text(size=7), legend.position = "bottom") +  theme(legend.key.size = unit(0.5, "cm")) + theme_bw() + ylim(-3, 3)#+ geom_text(aes(label=ifelse(ratio>10,as.character(genus),'')),size = 3, hjust=0,vjust=1)+ geom_text(aes(label=ifelse(ratio<0.1,as.character(genus),'')),size = 3, hjust=0,vjust=1)+ ylim(-3, 3)
+
+ggplot(m_Enterobacteriaceae, aes(x = log_mean, y = log_ratio, color = collection)) + geom_point(alpha = 0.6, size = 3) + scale_color_manual(values = col) + theme_classic() + geom_hline(yintercept=0,linetype="dashed") + ylab("Enterobacteriaceae RNA:DNA ratio (log10)") + xlab("Average abundance (log10)") + theme(legend.title = element_text( size=7), legend.text=element_text(size=7), legend.position = "bottom") +  theme(legend.key.size = unit(0.5, "cm")) + theme_bw()+ ylim(-3, 3) #+ geom_text(aes(label=ifelse(ratio>10,as.character(genus),'')),size = 3, hjust=0,vjust=1)+ geom_text(aes(label=ifelse(ratio<0.1,as.character(genus),'')),size = 3, hjust=0,vjust=1)+ ylim(-3, 3)
+
+ggplot(m_Clostridiaceae, aes(x = log_mean, y = log_ratio, color = collection)) + geom_point(alpha = 0.6, size = 3) + scale_color_manual(values = col) + theme_classic() + geom_hline(yintercept=0,linetype="dashed") + ylab("Clostridiaceae RNA:DNA ratio (log10)") + xlab("Average abundance (log10)") + theme(legend.title = element_text( size=7), legend.text=element_text(size=7), legend.position = "bottom") +  theme(legend.key.size = unit(0.5, "cm")) + theme_bw() + ylim(-3, 3)#+ geom_text(aes(label=ifelse(ratio>10,as.character(genus),'')),size = 3, hjust=0,vjust=1)+ geom_text(aes(label=ifelse(ratio<0.1,as.character(genus),'')),size = 3, hjust=0,vjust=1)+ ylim(-3, 3)
+
+ggplot(m_Comamonadaceae, aes(x = log_mean, y = log_ratio, color = collection)) + geom_point(alpha = 0.6, size = 3) + scale_color_manual(values = col) + theme_classic() + geom_hline(yintercept=0,linetype="dashed") + ylab("Comamonadaceae RNA:DNA ratio (log10)") + xlab("Average abundance (log10)") + theme(legend.title = element_text( size=7), legend.text=element_text(size=7), legend.position = "bottom") +  theme(legend.key.size = unit(0.5, "cm")) + theme_bw() + ylim(-3, 3)#+ geom_text(aes(label=ifelse(ratio>10,as.character(genus),'')),size = 3, hjust=0,vjust=1)+ geom_text(aes(label=ifelse(ratio<0.1,as.character(genus),'')),size = 3, hjust=0,vjust=1) + ylim(-3, 3)
+
+ggplot(m_Tissierellaceae, aes(x = log_mean, y = log_ratio, color = collection)) + geom_point(alpha = 0.6, size = 3) + scale_color_manual(values = col) + theme_classic() + geom_hline(yintercept=0,linetype="dashed") + ylab("Tissierellaceae RNA:DNA ratio (log10)") + xlab("Average abundance (log10)") + theme(legend.title = element_text( size=7), legend.text=element_text(size=7), legend.position = "bottom") +  theme(legend.key.size = unit(0.5, "cm")) + theme_bw()+ ylim(-3, 3) #+ geom_text(aes(label=ifelse(ratio>10,as.character(genus),'')),size = 3, hjust=0,vjust=1)+ geom_text(aes(label=ifelse(ratio<0.1,as.character(genus),'')),size = 3, hjust=0,vjust=1)+ ylim(-3, 3)
+
+ggplot(m_Propionibacteriaceae, aes(x = log_mean, y = log_ratio, color = collection)) + geom_point(alpha = 0.6, size = 3) + scale_color_manual(values = col) + theme_classic() + geom_hline(yintercept=0,linetype="dashed") + ylab("Propionibacteriaceae RNA:DNA ratio (log10)") + xlab("Average abundance (log10)") + theme(legend.title = element_text( size=7), legend.text=element_text(size=7), legend.position = "bottom") +  theme(legend.key.size = unit(0.5, "cm")) + theme_bw() + ylim(-3, 3) #+ geom_text(aes(label=ifelse(ratio>10,as.character(genus),'')),size = 3, hjust=0,vjust=1)+ geom_text(aes(label=ifelse(ratio<0.1,as.character(genus),'')),size = 3, hjust=0,vjust=1) + ylim(-3, 3)
+```
